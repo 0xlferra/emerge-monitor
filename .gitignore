@@ -1,0 +1,5 @@
+*.o
+/emon-server
+/emon-agent
+/tests/test_parser
+/src/server/dashboard.c

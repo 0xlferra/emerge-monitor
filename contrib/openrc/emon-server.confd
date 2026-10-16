@@ -1,0 +1,5 @@
+EMON_LISTEN="0.0.0.0:8080"
+EMON_DB="/var/lib/emerge-monitor/emon.db"
+EMON_TOKEN_FILE="/etc/emerge-monitor/token"
+EMON_USER="nobody"
+EMON_GROUP="nobody"

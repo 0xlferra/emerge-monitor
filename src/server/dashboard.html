@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>emerge monitor</title>
+<style>
+:root {
+  --bg: #f6f6f8; --card: #fff; --fg: #1d1d24; --muted: #6b6b78; --line: #e2e2e8;
+  --accent: #54487a; --ok: #2e7d32; --bad: #c62828; --warn: #b26a00; --run: #1565c0;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16161b; --card: #202028; --fg: #e8e8ee; --muted: #9a9aa8; --line: #33333d;
+          --accent: #a99be0; --ok: #66bb6a; --bad: #ef5350; --warn: #ffb74d; --run: #64b5f6; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 12px; }
+header h1 { margin: 0; font-size: 18px; color: var(--accent); }
+header span { color: var(--muted); font-size: 12px; }
+main { padding: 16px 20px; max-width: 1200px; margin: 0 auto; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; cursor: pointer; }
+.card.sel { outline: 2px solid var(--accent); }
+.card h2 { margin: 0 0 6px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.dot.on { background: var(--ok); }
+.muted { color: var(--muted); font-size: 12px; }
+.cmd { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+.bar { height: 6px; background: var(--line); border-radius: 3px; margin: 8px 0; overflow: hidden; }
+.bar > div { height: 100%; background: var(--run); }
+.pkg { font-family: ui-monospace, monospace; font-size: 12px; margin: 4px 0; }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; }
+.running, .building { color: var(--run); } .success, .done { color: var(--ok); }
+.failed { color: var(--bad); } .interrupted, .aborted { color: var(--warn); }
+section { margin-top: 24px; }
+section h3 { font-size: 15px; margin: 0 0 8px; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td.cmd { white-space: normal; }
+tbody tr { cursor: pointer; } tbody tr:hover { background: var(--bg); }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+.empty { color: var(--muted); padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header><h1>emerge monitor</h1><span id="updated"></span></header>
+<main>
+  <div id="hosts" class="grid"><div class="empty">Loading…</div></div>
+  <section id="sessions" hidden></section>
+  <section id="packages" hidden></section>
+</main>
+<script>
+"use strict";
+let selHost = null, selSession = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dur = (s) => {
+  if (s == null || s < 0) return "–";
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${x}s` : `${x}s`;
+};
+const when = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "–";
+const ago = (ts, now) => ts ? dur(now - ts) + " ago" : "never";
+const badge = (st) => `<span class="badge ${esc(st)}">${esc(st)}</span>`;
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+function hostCard(h, now) {
+  let body;
+  const c = h.current;
+  if (c) {
+    const pct = c.pkg_total ? Math.round(100 * c.pkg_done / c.pkg_total) : 0;
+    body = `<div>${badge("running")} <span class="muted">for ${dur(now - c.start_ts)} · ${c.pkg_done}/${c.pkg_total || "?"} packages</span></div>
+      <div class="cmd">${esc(c.command || "(unknown command)")}</div>
+      <div class="bar"><div style="width:${pct}%"></div></div>` +
+      c.building.map(p => {
+        const eta = p.avg_duration != null ? ` / ~${dur(p.avg_duration)}` : "";
+        return `<div class="pkg">(${p.seq} of ${p.total}) ${esc(p.atom)} <span class="muted">${dur(p.elapsed)}${eta}</span></div>`;
+      }).join("");
+  } else if (h.last) {
+    body = `<div>${badge(h.last.status)} <span class="muted">${ago(h.last.end_ts, now)}, took ${dur(h.last.end_ts - h.last.start_ts)}</span></div>
+      <div class="cmd">${esc(h.last.command || "(unknown command)")}</div>`;
+  } else {
+    body = `<div class="muted">No emerge sessions recorded yet.</div>`;
+  }
+  return `<div class="card${h.name === selHost ? " sel" : ""}" data-host="${esc(h.name)}">
+    <h2><span class="dot${h.online ? " on" : ""}" title="${h.online ? "agent online" : "agent offline"}"></span>${esc(h.name)}</h2>
+    ${body}
+    <div class="muted" style="margin-top:8px">last sync ${ago(h.last_sync, now)} · agent seen ${ago(h.last_seen, now)}</div>
+  </div>`;
+}
+
+async function refreshHosts() {
+  try {
+    const d = await api("/api/v1/hosts");
+    $("hosts").innerHTML = d.hosts.length ? d.hosts.map(h => hostCard(h, d.now)).join("")
+      : `<div class="empty">No hosts yet. Start emon-agent on a Gentoo machine.</div>`;
+    $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("updated").textContent = "server unreachable (" + e.message + ")";
+  }
+}
+
+async function showSessions() {
+  if (!selHost) return;
+  const d = await api("/api/v1/sessions?limit=100&host=" + encodeURIComponent(selHost));
+  const rows = d.sessions.map(s => `<tr data-session="${s.id}">
+    <td>${when(s.start_ts)}</td><td>${dur((s.end_ts || Date.now() / 1000 | 0) - s.start_ts)}</td>
+    <td>${badge(s.status)}</td><td>${s.pkg_done}/${s.pkg_total}${s.pkg_failed ? ` <span class="failed">(${s.pkg_failed} failed)</span>` : ""}</td>
+    <td class="cmd">${esc(s.command || "")}</td></tr>`).join("");
+  const el = $("sessions");
+  el.hidden = false;
+  el.innerHTML = `<h3>Sessions on ${esc(selHost)}</h3><div class="tablewrap"><table>
+    <thead><tr><th>Started</th><th>Duration</th><th>Status</th><th>Packages</th><th>Command</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5" class="empty">none</td></tr>`}</tbody></table></div>`;
+}
+
+async function showPackages() {
+  if (!selSession) return;
+  const d = await api("/api/v1/packages?session=" + selSession);
+  const now = Date.now() / 1000 | 0;
+  const rows = d.packages.map(p => `<tr>
+    <td>${p.seq}/${p.total}</td><td class="cmd">${esc(p.atom)}</td><td>${badge(p.status)}</td>
+    <td>${when(p.start_ts)}</td><td>${dur((p.end_ts || now) - p.start_ts)}</td><td>${dur(p.avg_duration)}</td></tr>`).join("");
+  const el = $("packages");
+  el.hidden = false;
+  el.innerHTML = `<h3>Packages in session #${selSession}</h3><div class="tablewrap"><table>
+    <thead><tr><th>#</th><th>Package</th><th>Status</th><th>Started</th><th>Duration</th><th>Avg</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6" class="empty">no packages</td></tr>`}</tbody></table></div>`;
+}
+
+$("hosts").addEventListener("click", (e) => {
+  const card = e.target.closest("[data-host]");
+  if (!card) return;
+  selHost = card.dataset.host; selSession = null;
+  $("packages").hidden = true;
+  refreshHosts(); showSessions();
+});
+$("sessions").addEventListener("click", (e) => {
+  const tr = e.target.closest("[data-session]");
+  if (!tr) return;
+  selSession = tr.dataset.session;
+  showPackages().then(() => $("packages").scrollIntoView({behavior: "smooth"}));
+});
+
+refreshHosts();
+setInterval(() => { refreshHosts(); showSessions().catch(() => {}); showPackages().catch(() => {}); }, 5000);
+</script>
+</body>
+</html>

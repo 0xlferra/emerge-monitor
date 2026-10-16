@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+description="emerge-monitor agent: ships emerge.log to emon-server"
+command="/usr/bin/emon-agent"
+command_args="-s ${EMON_SERVER} -t ${EMON_TOKEN_FILE:-/etc/emerge-monitor/token} ${EMON_AGENT_OPTS}"
+command_background=yes
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/emon-agent.log"
+error_log="/var/log/emon-agent.log"
+
+depend() {
+	need net
+	after logger
+}
+
+start_pre() {
+	if [ -z "${EMON_SERVER}" ]; then
+		eerror "Set EMON_SERVER in /etc/conf.d/${RC_SVCNAME}"
+		return 1
+	fi
+	checkpath -d -m 0750 /var/lib/emerge-monitor
+}

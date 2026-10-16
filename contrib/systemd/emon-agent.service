@@ -1,0 +1,17 @@
+[Unit]
+Description=emerge-monitor agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/emerge-monitor/agent.env
+ExecStart=/usr/bin/emon-agent -s ${EMON_SERVER} -t /etc/emerge-monitor/token $EMON_AGENT_OPTS
+StateDirectory=emerge-monitor
+Restart=always
+RestartSec=10
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+# URL of the emon-server instance
+EMON_SERVER="http://monitor.lan:8080"
+# File containing the shared token (chmod 600)
+EMON_TOKEN_FILE="/etc/emerge-monitor/token"
+# Extra options, e.g. "--name myhost --from-end"
+EMON_AGENT_OPTS=""

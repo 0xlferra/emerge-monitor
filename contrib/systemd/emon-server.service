@@ -1,0 +1,17 @@
+[Unit]
+Description=emerge-monitor server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/emon-server -l 0.0.0.0:8080 -d /var/lib/emerge-monitor/emon.db -t ${CREDENTIALS_DIRECTORY}/token
+LoadCredential=token:/etc/emerge-monitor/token
+DynamicUser=yes
+StateDirectory=emerge-monitor
+Restart=on-failure
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
