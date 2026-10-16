@@ -18,7 +18,9 @@ The dashboard shows, for every host:
 - the last `emerge --sync` and when the agent last reported
 
 Click a host to see its session history, and a session to see every package
-with its build time.
+with its build time. The **log** button next to a package that is building
+opens its `build.log`, updated live while it compiles (also kept for an hour
+after a failed build, so you can see why it failed).
 
 ```
  gentoo-a: emon-agent ─┐
@@ -48,7 +50,7 @@ daemons as the unprivileged user `emon`:
 
 | | needs |
 |---|---|
-| emon-agent | read `/var/log/emerge.log` (`root:portage`, mode `0660`, so `emon` must be in group `portage`), read the token, write `/var/lib/emerge-monitor/agent.state` |
+| emon-agent | read `/var/log/emerge.log` (`root:portage`, mode `0660`, so `emon` must be in group `portage`) and the `build.log` files under `$PORTAGE_TMPDIR/portage` (also via group `portage`), read the token, write `/var/lib/emerge-monitor/agent.state` |
 | emon-server | read the token, write `/var/lib/emerge-monitor/emon.db` |
 
 ### With the ebuild
@@ -132,6 +134,8 @@ history (and the build-time averages) are available right away. Use
 | `-S, --state PATH` | where the read position is kept (default `/var/lib/emerge-monitor/agent.state`) |
 | `-i, --interval SEC` | poll interval (default 2) |
 | `-e, --from-end` | on first run, skip existing history |
+| `-T, --portage-tmpdir DIR` | Portage's `PORTAGE_TMPDIR` (default: `$PORTAGE_TMPDIR`, else `/var/tmp`) |
+| `-B, --no-build-logs` | do not send the `build.log` of running builds |
 | `-1, --once` | upload what is there and exit (useful from cron) |
 
 | emon-server | |
@@ -147,6 +151,9 @@ history (and the build-time averages) are available right away. Use
   behind a reverse proxy (nginx, caddy) with TLS and authentication.
 - The built-in HTTP server speaks plain HTTP. Use `https://` URLs on the agent
   side when a TLS reverse proxy is in front; libcurl handles it.
+- The dashboard shows build logs to anyone who can open it. They hold
+  compiler output, paths and parts of the build environment; use
+  `--no-build-logs` on an agent if that is a concern.
 - Do not run either daemon as root; see [Setup](#setup) for the permissions
   they need. Membership in group `portage` gives read access to
   `emerge.log` and some of Portage's state, nothing more.
@@ -174,6 +181,22 @@ Recognised log lines (see [`src/common/emerge_log.c`](src/common/emerge_log.c)):
 A package still building when its session ends is marked *failed* (session
 failed) or *aborted* (session interrupted).
 
+### Live build logs
+
+The reply to every ingest request lists the packages the server thinks are
+building on that host. The agent follows
+`$PORTAGE_TMPDIR/portage/<category>/<package-version>/temp/build.log` for each
+of them, starting with the last 64 KiB, and posts new output to
+`/api/v1/buildlog`. Atoms are validated on both sides so the server cannot make
+the agent read anything outside that directory. When a package leaves the list
+the agent sends the file's last lines, then stops.
+
+The server keeps the last 512 KiB of each log **in memory only** (at most 64
+logs, dropped after an hour without updates), so restarting the server loses
+them. If a build writes faster than the agent uploads and it falls more than
+1 MiB behind, the agent skips ahead to the end; the viewer then shows
+"earlier output not available".
+
 ### API
 
 | endpoint | |
@@ -182,11 +205,13 @@ failed) or *aborted* (session interrupted).
 | `GET /api/v1/hosts` | all hosts with running session and last result |
 | `GET /api/v1/sessions?host=NAME&limit=N` | session history of a host |
 | `GET /api/v1/packages?session=ID` | packages of a session |
+| `POST /api/v1/buildlog?host=NAME&atom=CAT/PF` | `build.log` bytes starting at `X-Log-Offset` (agent only) |
+| `GET /api/v1/buildlog?host=NAME&atom=CAT/PF&offset=N` | buffered `build.log` text from offset `N`; `X-Log-Start`/`X-Log-End` give the file offsets returned |
 
 ## Roadmap ideas
 
 - notifications (mail / webhook / ntfy) when a session fails
-- parse `/var/tmp/portage/*/*/temp/build.log` to show the current phase
+- show the current ebuild phase (configure / compile / install) in the card
 - `@world` update counts from `emerge -pvuDN @world`
 - multiple tokens, one per host
 

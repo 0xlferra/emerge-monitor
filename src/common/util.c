@@ -43,6 +43,24 @@ int valid_hostname(const char *s)
 	return n > 0 && n <= HOSTNAME_MAX;
 }
 
+int valid_atom(const char *s)
+{
+	const char *slash = strchr(s, '/');
+	size_t n = strlen(s);
+
+	if (!slash || slash == s || !slash[1] || strchr(slash + 1, '/'))
+		return 0;
+	if (n >= 256 || s[0] == '.' || slash[1] == '.' || strstr(s, ".."))
+		return 0;
+	for (size_t i = 0; i < n; i++) {
+		unsigned char c = (unsigned char)s[i];
+		if (!isalnum(c) && c != '/' && c != '+' && c != '_' && c != '.' &&
+		    c != '-')
+			return 0;
+	}
+	return 1;
+}
+
 int read_token(const char *path, char *out, size_t outlen)
 {
 	FILE *f = fopen(path, "r");

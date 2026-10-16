@@ -22,6 +22,9 @@ void store_close(store *s);
 int store_ingest(store *s, const char *host, unsigned long long inode,
 		 long long offset, const char *data, size_t len, long long now);
 
+/* Append a JSON array with the atoms currently building on `host`. */
+int store_json_building(store *s, const char *host, sbuf *out);
+
 /* JSON renderers for the HTTP API. Return 0 on success, -1 on error. */
 int store_json_hosts(store *s, sbuf *out, long long now);
 int store_json_sessions(store *s, const char *host, int limit, sbuf *out);

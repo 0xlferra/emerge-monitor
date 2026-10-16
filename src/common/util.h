@@ -22,6 +22,11 @@ int const_time_eq(const char *a, const char *b);
 /* Host names are 1..HOSTNAME_MAX chars of [A-Za-z0-9._-]. */
 int valid_hostname(const char *s);
 
+/* Package atoms as logged by emerge: "category/name-version", made of
+ * [A-Za-z0-9+_.-], no leading '.' in either part and no "..". They are used
+ * to build file paths, so anything else is rejected. */
+int valid_atom(const char *s);
+
 /* Read a token from the first line of `path`, trimming whitespace. */
 int read_token(const char *path, char *out, size_t outlen);
 

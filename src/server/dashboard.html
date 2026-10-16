@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>emerge monitor</title>
+<link rel="icon" href="data:,">
 <style>
 :root {
   --bg: #f6f6f8; --card: #fff; --fg: #1d1d24; --muted: #6b6b78; --line: #e2e2e8;
@@ -42,12 +43,27 @@ td.cmd { white-space: normal; }
 tbody tr { cursor: pointer; } tbody tr:hover { background: var(--bg); }
 th { font-size: 12px; color: var(--muted); font-weight: 600; }
 .empty { color: var(--muted); padding: 30px; text-align: center; }
+.logbtn { font: 11px system-ui, sans-serif; padding: 0 6px; margin-left: 4px; border: 1px solid var(--line);
+          background: var(--card); color: var(--accent); border-radius: 4px; cursor: pointer; }
+#buildlog h3 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#buildlog h3 .spacer { flex: 1; }
+#buildlog label { font-weight: normal; font-size: 12px; color: var(--muted); }
+#bl-pre { margin: 0; max-height: 65vh; min-height: 120px; overflow: auto; padding: 10px 12px; border-radius: 8px;
+          background: #111116; color: #d8d8e0; border: 1px solid var(--line);
+          font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <header><h1>emerge monitor</h1><span id="updated"></span></header>
 <main>
   <div id="hosts" class="grid"><div class="empty">Loading…</div></div>
+  <section id="buildlog" hidden>
+    <h3><span id="bl-title"></span><span class="spacer"></span>
+      <label><input type="checkbox" id="bl-follow" checked> follow</label>
+      <button class="logbtn" id="bl-close">close</button></h3>
+    <pre id="bl-pre"></pre>
+    <div class="muted" id="bl-status"></div>
+  </section>
   <section id="sessions" hidden></section>
   <section id="packages" hidden></section>
 </main>
@@ -70,6 +86,9 @@ async function api(path) {
   return r.json();
 }
 
+const logBtn = (host, atom) =>
+  `<button class="logbtn" data-log-host="${esc(host)}" data-log-atom="${esc(atom)}" title="show build.log">log</button>`;
+
 function hostCard(h, now) {
   let body;
   const c = h.current;
@@ -80,7 +99,7 @@ function hostCard(h, now) {
       <div class="bar"><div style="width:${pct}%"></div></div>` +
       c.building.map(p => {
         const eta = p.avg_duration != null ? ` / ~${dur(p.avg_duration)}` : "";
-        return `<div class="pkg">(${p.seq} of ${p.total}) ${esc(p.atom)} <span class="muted">${dur(p.elapsed)}${eta}</span></div>`;
+        return `<div class="pkg">(${p.seq} of ${p.total}) ${esc(p.atom)} <span class="muted">${dur(p.elapsed)}${eta}</span>${logBtn(h.name, p.atom)}</div>`;
       }).join("");
   } else if (h.last) {
     body = `<div>${badge(h.last.status)} <span class="muted">${ago(h.last.end_ts, now)}, took ${dur(h.last.end_ts - h.last.start_ts)}</span></div>
@@ -125,7 +144,7 @@ async function showPackages() {
   const d = await api("/api/v1/packages?session=" + selSession);
   const now = Date.now() / 1000 | 0;
   const rows = d.packages.map(p => `<tr>
-    <td>${p.seq}/${p.total}</td><td class="cmd">${esc(p.atom)}</td><td>${badge(p.status)}</td>
+    <td>${p.seq}/${p.total}</td><td class="cmd">${esc(p.atom)}${p.status === "building" || p.status === "failed" ? logBtn(selHost, p.atom) : ""}</td><td>${badge(p.status)}</td>
     <td>${when(p.start_ts)}</td><td>${dur((p.end_ts || now) - p.start_ts)}</td><td>${dur(p.avg_duration)}</td></tr>`).join("");
   const el = $("packages");
   el.hidden = false;
@@ -134,7 +153,77 @@ async function showPackages() {
     <tbody>${rows || `<tr><td colspan="6" class="empty">no packages</td></tr>`}</tbody></table></div>`;
 }
 
+// Live build.log viewer. The server keeps the last part of each log and tells
+// us which file offsets the returned text covers (X-Log-Start / X-Log-End).
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
+const LOG_MAX_CHARS = 1000000;
+let blHost = null, blAtom = null, blOffset = 0, blTimer = null, blBusy = false;
+
+function openLog(host, atom) {
+  blHost = host; blAtom = atom; blOffset = 0;
+  $("bl-pre").textContent = "";
+  $("bl-status").textContent = "loading…";
+  $("bl-title").textContent = `build.log of ${atom} on ${host}`;
+  $("buildlog").hidden = false;
+  clearInterval(blTimer);
+  blTimer = setInterval(pollLog, 2000);
+  pollLog();
+  $("buildlog").scrollIntoView({behavior: "smooth"});
+}
+
+function closeLog() {
+  clearInterval(blTimer);
+  blHost = blAtom = null;
+  $("buildlog").hidden = true;
+}
+
+async function pollLog() {
+  if (!blHost || blBusy) return;
+  const host = blHost, atom = blAtom;
+  blBusy = true;
+  try {
+    const r = await fetch(`/api/v1/buildlog?host=${encodeURIComponent(host)}&atom=${encodeURIComponent(atom)}&offset=${blOffset}`);
+    if (host !== blHost || atom !== blAtom) return;
+    if (r.status === 404) {
+      $("bl-status").textContent = "No build.log received yet (still fetching, or the agent cannot read it).";
+      return;
+    }
+    if (!r.ok) throw new Error(r.status);
+    const start = Number(r.headers.get("X-Log-Start")), end = Number(r.headers.get("X-Log-End"));
+    const text = (await r.text()).replace(ANSI, "");
+    if (host !== blHost || atom !== blAtom) return;
+    const pre = $("bl-pre");
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+    const reset = start !== blOffset;  // first load, rebuild, or we fell behind the server's buffer
+    if (reset)
+      pre.textContent = start > 0 ? "[… earlier output not available …]\n" : "";
+    if (text) pre.append(text);
+    if (pre.textContent.length > LOG_MAX_CHARS)
+      pre.textContent = "[… truncated …]\n" + pre.textContent.slice(-LOG_MAX_CHARS * 0.8);
+    blOffset = end;
+    if ($("bl-follow").checked && (atBottom || reset)) pre.scrollTop = pre.scrollHeight;
+    $("bl-status").textContent = `${Math.round(end / 1024)} KiB written · updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    $("bl-status").textContent = "server unreachable (" + e.message + ")";
+  } finally {
+    blBusy = false;
+  }
+}
+
+function logClick(e) {
+  const b = e.target.closest("[data-log-atom]");
+  if (!b) return false;
+  openLog(b.dataset.logHost, b.dataset.logAtom);
+  return true;
+}
+
+$("bl-close").addEventListener("click", closeLog);
+$("bl-follow").addEventListener("change", () => {
+  if ($("bl-follow").checked) $("bl-pre").scrollTop = $("bl-pre").scrollHeight;
+});
+$("packages").addEventListener("click", logClick);
 $("hosts").addEventListener("click", (e) => {
+  if (logClick(e)) return;
   const card = e.target.closest("[data-host]");
   if (!card) return;
   selHost = card.dataset.host; selSession = null;

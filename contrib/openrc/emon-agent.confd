@@ -2,7 +2,8 @@
 EMON_SERVER="http://monitor.lan:8080"
 # File containing the shared token (owner root:emon, mode 0640)
 EMON_TOKEN_FILE="/etc/emerge-monitor/token"
-# Extra options, e.g. "--name myhost --from-end"
+# Extra options, e.g. "--name myhost --from-end", "--no-build-logs",
+# or "--portage-tmpdir /mnt/tmpfs" if PORTAGE_TMPDIR is not /var/tmp
 EMON_AGENT_OPTS=""
 # Unprivileged user to run as; it must be in the portage group
 EMON_USER="emon"

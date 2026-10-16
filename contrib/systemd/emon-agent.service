@@ -17,7 +17,7 @@ Restart=always
 RestartSec=10
 ProtectSystem=strict
 ProtectHome=yes
-PrivateTmp=yes
+# No PrivateTmp=: the agent reads build logs under /var/tmp/portage.
 NoNewPrivileges=yes
 
 [Install]

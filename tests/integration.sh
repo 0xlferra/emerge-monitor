@@ -8,7 +8,8 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 port=$((20000 + $$ % 20000))
 url="http://127.0.0.1:$port"
-trap 'kill $srv 2>/dev/null || true; rm -rf "$tmp"' EXIT
+agent_pid=
+trap 'kill $srv $agent_pid 2>/dev/null || true; rm -rf "$tmp"' EXIT
 
 echo secret > "$tmp/token"
 ./emon-server -l "127.0.0.1:$port" -d "$tmp/db" -t "$tmp/token" 2>"$tmp/server.log" &
@@ -21,7 +22,16 @@ done
 fail() { echo "integration: FAIL: $*" >&2; cat "$tmp/server.log" >&2; exit 1; }
 agent() {
 	./emon-agent -s "$url" -n testbox -t "$tmp/token" \
-		-l "$tmp/emerge.log" -S "$tmp/state" --once
+		-l "$tmp/emerge.log" -S "$tmp/state" -T "$tmp" "$@" --once
+}
+# wait_for CMD...: retry for up to 10 seconds
+wait_for() {
+	i=0
+	until "$@"; do
+		i=$((i + 1))
+		[ $i -lt 50 ] || return 1
+		sleep 0.2
+	done
 }
 
 # Ship the log in two parts to exercise incremental reads.
@@ -57,5 +67,58 @@ echo "$pk" | grep -q '"atom":"www-client/firefox-119.0.1".*"status":"failed"' ||
 echo "$pk" | grep -q '"avg_duration":53' || fail "zlib average: $pk"
 
 curl -fs "$url/" | grep -q '<title>emerge monitor</title>' || fail "dashboard"
+
+# --- live build.log -------------------------------------------------------
+atom=dev-lang/rust-1.80.0
+blog="$tmp/portage/$atom/temp/build.log"
+mkdir -p "$(dirname "$blog")"
+printf ' * Package:    %s\n\033[32;01m*\033[0m Compiling\n' "$atom" > "$blog"
+cat >> "$tmp/emerge.log" <<EOL
+1700030000:  *** emerge --oneshot dev-lang/rust
+1700030001:  >>> emerge (1 of 1) $atom to /
+EOL
+./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	-S "$tmp/state" -T "$tmp" -i 1 2>"$tmp/agent.log" &
+agent_pid=$!
+
+log_matches() {
+	curl -fs "$url/api/v1/buildlog?host=testbox&atom=$atom" > "$tmp/got" 2>/dev/null &&
+		cmp -s "$tmp/got" "$blog"
+}
+wait_for log_matches || fail "build.log not received: $(cat "$tmp/got" "$tmp/agent.log")"
+
+seq 1 2000 | sed 's/^/compiling unit /' >> "$blog"
+wait_for log_matches || fail "build.log not followed"
+
+# A burst of output: the agent may skip ahead and the server keeps at most
+# 512 KiB, but what it serves must be the exact end of the file.
+seq 1 100000 | sed 's/^/a long build log line /' >> "$blog"
+tail_matches() {
+	curl -fs "$url/api/v1/buildlog?host=testbox&atom=$atom" > "$tmp/got" 2>/dev/null || return 1
+	n=$(wc -c < "$tmp/got")
+	[ "$n" -gt 0 ] && [ "$n" -le 524288 ] && tail -c "$n" "$blog" | cmp -s "$tmp/got" -
+}
+wait_for tail_matches || fail "large build.log: got $(wc -c < "$tmp/got") bytes"
+
+# The build fails: its last lines must still arrive after it stops building.
+echo "error: could not compile" >> "$blog"
+cat >> "$tmp/emerge.log" <<EOL
+1700030100:  *** exiting unsuccessfully with status '1'.
+1700030100:  *** terminating.
+EOL
+wait_for tail_matches || fail "final build.log lines missing"
+wait_for sh -c "! curl -fs '$url/api/v1/hosts' | grep -q '\"building\":\[{'" ||
+	fail "package still shown as building"
+
+# Incremental reads and their offsets.
+size=$(wc -c < "$blog")
+hdr=$(curl -fs -D - -o /dev/null "$url/api/v1/buildlog?host=testbox&atom=$atom&offset=$size")
+echo "$hdr" | grep -qi "^X-Log-Start: $size" || fail "offset: $hdr"
+echo "$hdr" | grep -qi "^X-Log-End: $size" || fail "end: $hdr"
+
+# Atoms are used to build paths on the agent: reject anything odd.
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' \
+	"$url/api/v1/buildlog?host=testbox&atom=../../etc/passwd")
+[ "$code" = 400 ] || fail "expected 400 for bad atom, got $code"
 
 echo "integration: ok"

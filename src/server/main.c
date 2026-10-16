@@ -21,6 +21,7 @@
 
 #include "../common/sbuf.h"
 #include "../common/util.h"
+#include "buildlog.h"
 #include "store.h"
 
 #define MAX_HEADER (16 * 1024)
@@ -50,8 +51,8 @@ static void on_signal(int sig)
 	stop = 1;
 }
 
-static void send_response(int fd, int code, const char *ctype,
-			  const char *body, size_t len)
+static void send_response_hdrs(int fd, int code, const char *ctype,
+			       const char *extra, const char *body, size_t len)
 {
 	const char *reason = code == 200 ? "OK" :
 			     code == 400 ? "Bad Request" :
@@ -67,11 +68,17 @@ static void send_response(int fd, int code, const char *ctype,
 		      "Content-Length: %zu\r\n"
 		      "Cache-Control: no-store\r\n"
 		      "X-Content-Type-Options: nosniff\r\n"
-		      "Connection: close\r\n\r\n",
-		  code, reason, ctype, len);
+		      "Connection: close\r\n%s\r\n",
+		  code, reason, ctype, len, extra ? extra : "");
 	write_all(fd, h.data, h.len);
 	write_all(fd, body, len);
 	sb_free(&h);
+}
+
+static void send_response(int fd, int code, const char *ctype,
+			  const char *body, size_t len)
+{
+	send_response_hdrs(fd, code, ctype, NULL, body, len);
 }
 
 static void send_error(int fd, int code, const char *msg)
@@ -215,7 +222,7 @@ static int authorized(const request *rq)
 static void handle(int fd, const request *rq)
 {
 	sbuf out;
-	char host[HOSTNAME_MAX + 1], val[32];
+	char host[HOSTNAME_MAX + 1], atom[256], val[32];
 	long long now = (long long)time(NULL);
 
 	sb_init(&out);
@@ -238,10 +245,12 @@ static void handle(int fd, const request *rq)
 		} else {
 			int n = store_ingest(db, host, rq->inode, rq->offset,
 					     rq->body, rq->body_len, now);
-			if (n < 0) {
+			/* Tell the agent which build logs to follow. */
+			sb_printf(&out, "{\"applied\":%d,\"building\":", n);
+			if (n < 0 || store_json_building(db, host, &out) < 0) {
 				send_error(fd, 500, "database error");
 			} else {
-				sb_printf(&out, "{\"applied\":%d}", n);
+				sb_puts(&out, "}");
 				send_json(fd, &out);
 			}
 		}
@@ -264,6 +273,40 @@ static void handle(int fd, const request *rq)
 			send_error(fd, 500, "database error");
 		else
 			send_json(fd, &out);
+
+	} else if (!strcmp(rq->path, "/api/v1/buildlog")) {
+		if (!query_param(rq->query, "host", host, sizeof(host)) ||
+		    !valid_hostname(host) ||
+		    !query_param(rq->query, "atom", atom, sizeof(atom)) ||
+		    !valid_atom(atom)) {
+			send_error(fd, 400, "missing or invalid host/atom");
+		} else if (!strcmp(rq->method, "POST")) {
+			if (!authorized(rq)) {
+				send_error(fd, 401, "bad or missing token");
+			} else {
+				bl_append(host, atom, rq->inode,
+					  rq->offset < 0 ? 0 : rq->offset,
+					  rq->body, rq->body_len, now);
+				sb_puts(&out, "{\"ok\":true}");
+				send_json(fd, &out);
+			}
+		} else {
+			long long from = 0, start, end;
+			const char *data;
+			size_t len;
+			char hdrs[128];
+			if (query_param(rq->query, "offset", val, sizeof(val)))
+				from = atoll(val);
+			if (bl_read(host, atom, from, &data, &len, &start, &end) < 0) {
+				send_error(fd, 404, "no build log for this package");
+			} else {
+				snprintf(hdrs, sizeof(hdrs),
+					 "X-Log-Start: %lld\r\nX-Log-End: %lld\r\n",
+					 start, end);
+				send_response_hdrs(fd, 200, "text/plain; charset=utf-8",
+						   hdrs, data, len);
+			}
+		}
 
 	} else if (!strcmp(rq->path, "/api/v1/packages")) {
 		if (!query_param(rq->query, "session", val, sizeof(val)))

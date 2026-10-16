@@ -18,7 +18,8 @@ CURL_LIBS     := $(shell $(PKG_CONFIG) --libs libcurl)
 
 COMMON_SRC := src/common/sbuf.c src/common/emerge_log.c src/common/util.c
 COMMON_OBJ := $(COMMON_SRC:.c=.o)
-SERVER_OBJ := src/server/main.o src/server/store.o src/server/dashboard.o
+SERVER_OBJ := src/server/main.o src/server/store.o src/server/buildlog.o \
+              src/server/dashboard.o
 AGENT_OBJ  := src/agent/main.o
 
 .PHONY: all clean check install
@@ -46,8 +47,12 @@ src/server/dashboard.c: src/server/dashboard.html tools/embed.awk
 tests/test_parser: tests/test_parser.c $(COMMON_OBJ)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-check: tests/test_parser all
+tests/test_buildlog: tests/test_buildlog.c src/server/buildlog.o $(COMMON_OBJ)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+check: tests/test_parser tests/test_buildlog all
 	./tests/test_parser tests/data/emerge.log
+	./tests/test_buildlog
 	./tests/integration.sh
 
 install: all
@@ -55,5 +60,5 @@ install: all
 	install -m 755 emon-server emon-agent $(DESTDIR)$(BINDIR)
 
 clean:
-	rm -f emon-server emon-agent tests/test_parser src/server/dashboard.c \
+	rm -f emon-server emon-agent tests/test_parser tests/test_buildlog src/server/dashboard.c \
 	      src/*/*.o

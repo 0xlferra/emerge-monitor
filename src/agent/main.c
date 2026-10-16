@@ -6,6 +6,10 @@
  * with the log's inode and the byte offset they start at, so the server can
  * drop anything it already has. The last acknowledged position is kept in a
  * state file so restarts neither lose nor duplicate data.
+ *
+ * The server answers with the packages it believes are building on this
+ * host; the agent follows their build.log files under PORTAGE_TMPDIR and
+ * ships those too, so they can be watched live from the dashboard.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -20,22 +24,34 @@
 
 #include <curl/curl.h>
 
+#include "../common/sbuf.h"
 #include "../common/util.h"
 
 #define CHUNK_MAX (256 * 1024)
 #define HEARTBEAT_SEC 60
 #define BACKOFF_MAX_SEC 300
 
+#define MAX_TAILS 32
+/* When starting to follow a build.log, only send this much of its end. */
+#define TAIL_INITIAL (64 * 1024)
+#define TAIL_CHUNK (64 * 1024)
+/* Per poll and per log, so one chatty build cannot starve the others. */
+#define TAIL_CHUNKS_PER_POLL 4
+/* Further behind than this, skip ahead: the view is live, not an archive. */
+#define TAIL_MAX_BEHIND (1024 * 1024)
+
 typedef struct {
 	const char *server;
 	const char *log_path;
 	const char *state_path;
+	const char *portage_tmpdir;
 	char host[HOSTNAME_MAX + 1];
 	char token[256];
 	int interval;
 	int from_end;
 	int once;
 	int verbose;
+	int build_logs;
 } config;
 
 typedef struct {
@@ -44,7 +60,18 @@ typedef struct {
 	long long offset;
 } logpos;
 
+/* A build.log the server asked us to follow. */
+typedef struct {
+	char atom[256];
+	unsigned long long inode;
+	long long offset;   /* -1: not opened yet */
+	int wanted;         /* still in the server's list */
+	int warned;
+} tail;
+
 static volatile sig_atomic_t stop;
+static tail tails[MAX_TAILS];
+static int ntails;
 
 static void on_signal(int sig)
 {
@@ -95,15 +122,21 @@ static int save_state(const char *path, unsigned long long inode,
 
 /* ------------------------------------------------------------------ HTTP */
 
-static size_t discard(char *ptr, size_t size, size_t n, void *ud)
+static size_t collect(char *ptr, size_t size, size_t n, void *ud)
 {
-	(void)ptr;
-	(void)ud;
+	if (ud)
+		sb_append(ud, ptr, size * n);
 	return size * n;
 }
 
-static int post(const config *cfg, unsigned long long inode, long long offset,
-		const char *data, size_t len)
+/*
+ * POST `data` to `endpoint` (e.g. "ingest"), tagged with the file position
+ * it comes from. If `atom` is set it is passed as a query parameter. The
+ * reply body is stored in `resp` when that is not NULL.
+ */
+static int post(const config *cfg, const char *endpoint, const char *atom,
+		unsigned long long inode, long long offset,
+		const char *data, size_t len, sbuf *resp)
 {
 	char url[2048], h_auth[300], h_inode[64], h_off[64];
 	CURL *c = curl_easy_init();
@@ -111,9 +144,13 @@ static int post(const config *cfg, unsigned long long inode, long long offset,
 		return -1;
 
 	char *host = curl_easy_escape(c, cfg->host, 0);
-	snprintf(url, sizeof(url), "%s/api/v1/ingest?host=%s", cfg->server,
-		 host);
+	char *eatom = atom ? curl_easy_escape(c, atom, 0) : NULL;
+	snprintf(url, sizeof(url), "%s/api/v1/%s?host=%s%s%s", cfg->server,
+		 endpoint, host, eatom ? "&atom=" : "", eatom ? eatom : "");
 	curl_free(host);
+	curl_free(eatom);
+	if (resp)
+		sb_reset(resp);
 
 	struct curl_slist *hdrs = NULL;
 	hdrs = curl_slist_append(hdrs, "Content-Type: text/plain");
@@ -136,12 +173,13 @@ static int post(const config *cfg, unsigned long long inode, long long offset,
 	curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_easy_setopt(c, CURLOPT_TIMEOUT, 60L);
 	curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
-	curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, discard);
+	curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, collect);
+	curl_easy_setopt(c, CURLOPT_WRITEDATA, resp);
 
 	int rc = -1;
 	CURLcode res = curl_easy_perform(c);
 	if (res != CURLE_OK) {
-		fprintf(stderr, "emon-agent: %s: %s\n", cfg->server,
+		fprintf(stderr, "emon-agent: %s: %s\n", url,
 			curl_easy_strerror(res));
 	} else {
 		long status = 0;
@@ -149,12 +187,116 @@ static int post(const config *cfg, unsigned long long inode, long long offset,
 		if (status >= 200 && status < 300)
 			rc = 0;
 		else
-			fprintf(stderr, "emon-agent: server replied HTTP %ld\n",
-				status);
+			fprintf(stderr, "emon-agent: %s: server replied HTTP %ld\n",
+				endpoint, status);
 	}
 	curl_slist_free_all(hdrs);
 	curl_easy_cleanup(c);
 	return rc;
+}
+
+/* ------------------------------------------------------------ build logs */
+
+/*
+ * Update the set of followed logs from an ingest reply, which carries
+ * `"building":["cat/pf",...]`. Logs that dropped out of the list are kept
+ * until their final lines have been sent (see follow_build_logs).
+ */
+static void set_wanted(const char *reply)
+{
+	const char *p = reply ? strstr(reply, "\"building\":[") : NULL;
+
+	for (int i = 0; i < ntails; i++)
+		tails[i].wanted = 0;
+	if (!p)
+		return;
+	p += strlen("\"building\":[");
+
+	while (*p && *p != ']') {
+		if (*p != '"') {
+			p++;
+			continue;
+		}
+		const char *start = p + 1, *q = strchr(start, '"');
+		if (!q)
+			break;
+		p = q + 1;
+		char atom[256];
+		size_t n = (size_t)(q - start);
+		if (n >= sizeof(atom))
+			continue;
+		memcpy(atom, start, n);
+		atom[n] = '\0';
+		if (!valid_atom(atom))
+			continue; /* never let the server pick arbitrary paths */
+
+		int i;
+		for (i = 0; i < ntails && strcmp(tails[i].atom, atom); i++)
+			;
+		if (i == ntails) {
+			if (ntails == MAX_TAILS)
+				continue;
+			memset(&tails[i], 0, sizeof(tails[i]));
+			snprintf(tails[i].atom, sizeof(tails[i].atom), "%s", atom);
+			tails[i].offset = -1;
+			ntails++;
+		}
+		tails[i].wanted = 1;
+	}
+}
+
+static void follow_one(const config *cfg, tail *t, char *buf)
+{
+	char path[4096];
+	struct stat st;
+
+	snprintf(path, sizeof(path), "%s/portage/%s/temp/build.log",
+		 cfg->portage_tmpdir, t->atom);
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		/* ENOENT is normal: not created yet, or cleaned after merge */
+		if (errno != ENOENT && !t->warned) {
+			fprintf(stderr, "emon-agent: %s: %s (is the agent user in "
+					"group portage?)\n", path, strerror(errno));
+			t->warned = 1;
+		}
+		return;
+	}
+	if (fstat(fd, &st) < 0)
+		goto out;
+	if (t->offset < 0 || (unsigned long long)st.st_ino != t->inode) {
+		t->inode = (unsigned long long)st.st_ino;
+		t->offset = st.st_size > TAIL_INITIAL ? st.st_size - TAIL_INITIAL : 0;
+	} else if (st.st_size < t->offset) {
+		t->offset = 0;
+	} else if (st.st_size - t->offset > TAIL_MAX_BEHIND) {
+		t->offset = st.st_size - TAIL_INITIAL;
+	}
+
+	for (int i = 0; i < TAIL_CHUNKS_PER_POLL && !stop; i++) {
+		ssize_t n = pread(fd, buf, TAIL_CHUNK, t->offset);
+		if (n <= 0)
+			break;
+		if (post(cfg, "buildlog", t->atom, t->inode, t->offset, buf,
+			 (size_t)n, NULL) < 0)
+			break;
+		t->offset += n;
+	}
+out:
+	close(fd);
+}
+
+static void follow_build_logs(const config *cfg, char *buf)
+{
+	for (int i = 0; i < ntails;) {
+		follow_one(cfg, &tails[i], buf);
+		if (tails[i].wanted) {
+			i++;
+		} else {
+			/* finished: its last lines were sent just above */
+			tails[i] = tails[--ntails];
+		}
+	}
 }
 
 /* --------------------------------------------------------------- log I/O */
@@ -183,7 +325,7 @@ static int open_log(const config *cfg, logpos *lp)
  * Returns 1 if anything was sent, 0 if there was nothing to do, -1 on a
  * failed upload.
  */
-static int drain(const config *cfg, logpos *lp, char *buf)
+static int drain(const config *cfg, logpos *lp, char *buf, sbuf *resp)
 {
 	int sent = 0;
 	struct stat st;
@@ -204,8 +346,10 @@ static int drain(const config *cfg, logpos *lp, char *buf)
 		else if (len < CHUNK_MAX)
 			break; /* partial line still being written */
 
-		if (post(cfg, lp->inode, lp->offset, buf, len) < 0)
+		if (post(cfg, "ingest", NULL, lp->inode, lp->offset, buf, len,
+			 resp) < 0)
 			return -1;
+		set_wanted(resp->data);
 		lp->offset += (long long)len;
 		save_state(cfg->state_path, lp->inode, lp->offset);
 		if (cfg->verbose)
@@ -232,9 +376,11 @@ static int run(const config *cfg)
 	char *buf = malloc(CHUNK_MAX);
 	time_t last_post = 0;
 	int backoff = cfg->interval;
+	sbuf resp;
 
 	if (!buf)
 		return 1;
+	sb_init(&resp);
 
 	while (!stop) {
 		if (lp.fd < 0) {
@@ -248,7 +394,7 @@ static int run(const config *cfg)
 
 		int r = 0;
 		if (lp.fd >= 0) {
-			r = drain(cfg, &lp, buf);
+			r = drain(cfg, &lp, buf, &resp);
 			if (r >= 0 && rotated(cfg, &lp)) {
 				/* old file fully shipped; switch to the new one */
 				close(lp.fd);
@@ -257,13 +403,21 @@ static int run(const config *cfg)
 			}
 		}
 
-		if (r == 0 && time(NULL) - last_post >= HEARTBEAT_SEC)
-			r = post(cfg, lp.inode, lp.offset, NULL, 0) < 0 ? -1 : 1;
+		if (r == 0 && time(NULL) - last_post >= HEARTBEAT_SEC) {
+			r = post(cfg, "ingest", NULL, lp.inode, lp.offset, NULL, 0,
+				 &resp) < 0 ? -1 : 1;
+			if (r > 0)
+				set_wanted(resp.data);
+		}
 		if (r > 0)
 			last_post = time(NULL);
 
+		if (r >= 0 && cfg->build_logs)
+			follow_build_logs(cfg, buf);
+
 		if (cfg->once) {
 			free(buf);
+			sb_free(&resp);
 			return r < 0 ? 1 : 0;
 		}
 		if (r < 0) {
@@ -278,6 +432,7 @@ static int run(const config *cfg)
 	if (lp.fd >= 0)
 		close(lp.fd);
 	free(buf);
+	sb_free(&resp);
 	return 0;
 }
 
@@ -292,6 +447,9 @@ static void usage(FILE *f)
 		"  -S, --state PATH        state file (default %s)\n"
 		"  -i, --interval SEC      poll interval (default 2)\n"
 		"  -e, --from-end          on first run skip existing history\n"
+		"  -T, --portage-tmpdir DIR  PORTAGE_TMPDIR (default $PORTAGE_TMPDIR\n"
+		"                          or /var/tmp)\n"
+		"  -B, --no-build-logs     do not send build.log of running builds\n"
 		"  -1, --once              ship what is there, then exit\n"
 		"  -v, --verbose           log every upload\n"
 		"  -h, --help              show this help\n",
@@ -304,6 +462,7 @@ int main(int argc, char **argv)
 		.log_path = "/var/log/emerge.log",
 		.state_path = EMON_DEFAULT_STATE,
 		.interval = 2,
+		.build_logs = 1,
 	};
 	const char *token_file = NULL;
 	static const struct option opts[] = {
@@ -314,13 +473,15 @@ int main(int argc, char **argv)
 		{"state", required_argument, NULL, 'S'},
 		{"interval", required_argument, NULL, 'i'},
 		{"from-end", no_argument, NULL, 'e'},
+		{"portage-tmpdir", required_argument, NULL, 'T'},
+		{"no-build-logs", no_argument, NULL, 'B'},
 		{"once", no_argument, NULL, '1'},
 		{"verbose", no_argument, NULL, 'v'},
 		{"help", no_argument, NULL, 'h'},
 		{0},
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "s:n:t:l:S:i:e1vh", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "s:n:t:l:S:i:eT:B1vh", opts, NULL)) != -1) {
 		switch (c) {
 		case 's': cfg.server = optarg; break;
 		case 'n': snprintf(cfg.host, sizeof(cfg.host), "%s", optarg); break;
@@ -329,6 +490,8 @@ int main(int argc, char **argv)
 		case 'S': cfg.state_path = optarg; break;
 		case 'i': cfg.interval = atoi(optarg); break;
 		case 'e': cfg.from_end = 1; break;
+		case 'T': cfg.portage_tmpdir = optarg; break;
+		case 'B': cfg.build_logs = 0; break;
 		case '1': cfg.once = 1; break;
 		case 'v': cfg.verbose = 1; break;
 		case 'h': usage(stdout); return 0;
@@ -341,6 +504,10 @@ int main(int argc, char **argv)
 	}
 	if (cfg.interval < 1)
 		cfg.interval = 1;
+	if (!cfg.portage_tmpdir) {
+		const char *t = getenv("PORTAGE_TMPDIR");
+		cfg.portage_tmpdir = t && *t ? t : "/var/tmp";
+	}
 
 	if (!cfg.host[0]) {
 		gethostname(cfg.host, sizeof(cfg.host) - 1);

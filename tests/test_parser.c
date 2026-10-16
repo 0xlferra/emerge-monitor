@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../src/common/emerge_log.h"
+#include "../src/common/util.h"
 
 static int failures;
 
@@ -94,6 +95,17 @@ int main(int argc, char **argv)
 	check_pn("dev-qt/qtbase-6.6.0::gentoo", "dev-qt/qtbase");
 	check_pn("app-misc/foo-1.0_rc2-r10", "app-misc/foo");
 	check_lines();
+
+	CHECK(valid_atom("sys-libs/zlib-1.3-r1"));
+	CHECK(valid_atom("x11-libs/gtk+-3.24.38"));
+	CHECK(!valid_atom("../etc/passwd"));
+	CHECK(!valid_atom("sys-libs/../../x"));
+	CHECK(!valid_atom("sys-libs/.hidden"));
+	CHECK(!valid_atom("a/b/c"));
+	CHECK(!valid_atom("noslash"));
+	CHECK(!valid_atom("/abs"));
+	CHECK(!valid_atom("cat/"));
+	CHECK(!valid_atom("cat/pkg 1"));
 	if (argc > 1)
 		failures += check_file(argv[1]);
 	if (failures) {
