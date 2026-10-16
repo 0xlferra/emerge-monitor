@@ -4,7 +4,7 @@
 description="emerge-monitor server: collects emerge sessions and serves the dashboard"
 command="/usr/bin/emon-server"
 command_args="-l ${EMON_LISTEN:-0.0.0.0:8080} -d ${EMON_DB:-/var/lib/emerge-monitor/emon.db} -t ${EMON_TOKEN_FILE:-/etc/emerge-monitor/token}"
-command_user="${EMON_USER:-nobody}:${EMON_GROUP:-nobody}"
+command_user="${EMON_USER:-emon}:${EMON_GROUP:-emon}"
 command_background=yes
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/emon-server.log"

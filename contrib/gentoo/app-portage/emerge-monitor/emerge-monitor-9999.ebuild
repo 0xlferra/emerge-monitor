@@ -18,7 +18,9 @@ DEPEND="
 	agent? ( net-misc/curl )
 	server? ( dev-db/sqlite:3 )
 "
-RDEPEND="${DEPEND}"
+RDEPEND="${DEPEND}
+	acct-user/emon
+"
 BDEPEND="virtual/pkgconfig"
 
 src_compile() {
@@ -47,12 +49,26 @@ src_install() {
 		systemd_dounit contrib/systemd/emon-server.service
 	fi
 	keepdir /var/lib/emerge-monitor
+	fowners emon:emon /var/lib/emerge-monitor
+	fperms 0750 /var/lib/emerge-monitor
+
+	keepdir /etc/emerge-monitor
+	fowners root:emon /etc/emerge-monitor
+	fperms 0750 /etc/emerge-monitor
+	if use agent; then
+		insinto /etc/emerge-monitor
+		newins contrib/systemd/agent.env.example agent.env.example
+	fi
+
 	einstalldocs
 }
 
 pkg_postinst() {
-	elog "Create a shared token on every machine, e.g.:"
-	elog "  mkdir -p /etc/emerge-monitor"
-	elog "  head -c 32 /dev/urandom | base64 > /etc/emerge-monitor/token"
-	elog "  chmod 600 /etc/emerge-monitor/token"
+	if [[ ! -e ${EROOT}/etc/emerge-monitor/token ]]; then
+		elog "Put the same shared token on the server and on every agent:"
+		elog "  head -c 32 /dev/urandom | base64 > /etc/emerge-monitor/token"
+		elog "  chown root:emon /etc/emerge-monitor/token"
+		elog "  chmod 0640 /etc/emerge-monitor/token"
+		elog "Both daemons run as the unprivileged user 'emon'."
+	fi
 }

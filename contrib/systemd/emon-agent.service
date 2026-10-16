@@ -5,12 +5,19 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=-/etc/emerge-monitor/agent.env
-ExecStart=/usr/bin/emon-agent -s ${EMON_SERVER} -t /etc/emerge-monitor/token $EMON_AGENT_OPTS
+# The token can stay root-only: systemd hands the service a private copy.
+LoadCredential=token:/etc/emerge-monitor/token
+ExecStart=/usr/bin/emon-agent -s ${EMON_SERVER} -t ${CREDENTIALS_DIRECTORY}/token $EMON_AGENT_OPTS
+User=emon
+Group=emon
+SupplementaryGroups=portage
 StateDirectory=emerge-monitor
+StateDirectoryMode=0750
 Restart=always
 RestartSec=10
 ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 NoNewPrivileges=yes
 
 [Install]

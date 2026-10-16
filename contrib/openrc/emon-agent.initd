@@ -4,6 +4,8 @@
 description="emerge-monitor agent: ships emerge.log to emon-server"
 command="/usr/bin/emon-agent"
 command_args="-s ${EMON_SERVER} -t ${EMON_TOKEN_FILE:-/etc/emerge-monitor/token} ${EMON_AGENT_OPTS}"
+# The user must be in the portage group to read /var/log/emerge.log.
+command_user="${EMON_USER:-emon}:${EMON_GROUP:-emon}"
 command_background=yes
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/emon-agent.log"
@@ -19,5 +21,6 @@ start_pre() {
 		eerror "Set EMON_SERVER in /etc/conf.d/${RC_SVCNAME}"
 		return 1
 	fi
-	checkpath -d -m 0750 /var/lib/emerge-monitor
+	checkpath -d -m 0750 -o "${command_user}" /var/lib/emerge-monitor
+	checkpath -f -m 0640 -o "${command_user}" /var/log/emon-agent.log
 }

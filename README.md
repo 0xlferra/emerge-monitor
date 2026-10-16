@@ -39,40 +39,83 @@ make install PREFIX=/usr
 ```
 
 `make emon-agent` or `make emon-server` builds only one of them. A live
-ebuild is in [`contrib/gentoo`](contrib/gentoo/app-portage/emerge-monitor),
-with `agent` and `server` USE flags.
+ebuild is in [`contrib/gentoo`](contrib/gentoo), see [Setup](#setup).
 
 ## Setup
 
-1. Generate a shared token and copy it to the server and every agent:
+Neither program needs root. The service files shipped in `contrib/` run both
+daemons as the unprivileged user `emon`:
+
+| | needs |
+|---|---|
+| emon-agent | read `/var/log/emerge.log` (`root:portage`, mode `0660`, so `emon` must be in group `portage`), read the token, write `/var/lib/emerge-monitor/agent.state` |
+| emon-server | read the token, write `/var/lib/emerge-monitor/emon.db` |
+
+### With the ebuild
+
+`contrib/gentoo` is a small overlay holding `app-portage/emerge-monitor` plus
+`acct-user/emon` and `acct-group/emon`, which create the user (with
+`portage` as a supplementary group). Add it as a local repository, e.g. in
+`/etc/portage/repos.conf/emerge-monitor.conf`:
+
+```ini
+[emerge-monitor]
+location = /path/to/emerge-monitor/contrib/gentoo
+```
+
+then `emerge app-portage/emerge-monitor` (USE `agent`, `server` or both;
+it is a live `9999` ebuild, so it needs `**` keywords). The ebuild creates
+`/var/lib/emerge-monitor` (`emon:emon`, `0750`) and `/etc/emerge-monitor`
+(`root:emon`, `0750`).
+
+### By hand
+
+```sh
+make && make install PREFIX=/usr
+groupadd -r emon
+useradd -r -g emon -G portage -d /dev/null -s /sbin/nologin emon
+install -d -o emon -g emon -m 0750 /var/lib/emerge-monitor
+install -d -o root -g emon -m 0750 /etc/emerge-monitor
+```
+
+On the server machine you can drop `-G portage` if no agent runs there.
+
+### Configuration
+
+1. Generate a shared token once and put the same file on the server and on
+   every agent, readable by `emon` but not by other users:
 
    ```sh
-   mkdir -p /etc/emerge-monitor
    head -c 32 /dev/urandom | base64 > /etc/emerge-monitor/token
-   chmod 600 /etc/emerge-monitor/token
+   chown root:emon /etc/emerge-monitor/token
+   chmod 0640 /etc/emerge-monitor/token
    ```
 
-2. On the server:
+   With systemd the token may stay `root:root 0600`: the units read it with
+   `LoadCredential=` and pass the service a private copy.
+
+2. On the server, with OpenRC (`contrib/openrc/emon-server.{initd,confd}`):
 
    ```sh
-   emon-server -l 0.0.0.0:8080 -d /var/lib/emerge-monitor/emon.db \
-               -t /etc/emerge-monitor/token
+   rc-update add emon-server default && rc-service emon-server start
    ```
 
-   or with OpenRC: install `contrib/openrc/emon-server.{initd,confd}`, then
-   `rc-update add emon-server default && rc-service emon-server start`.
+   or systemd: `systemctl enable --now emon-server`.
 
-3. On each Gentoo machine:
-
-   ```sh
-   emon-agent -s http://monitor.lan:8080 -t /etc/emerge-monitor/token
-   ```
-
-   or with OpenRC: install `contrib/openrc/emon-agent.{initd,confd}`, set
-   `EMON_SERVER` in `/etc/conf.d/emon-agent`, then add it to the default
-   runlevel. systemd units are in `contrib/systemd`.
+3. On each Gentoo machine, set `EMON_SERVER` in `/etc/conf.d/emon-agent`
+   (OpenRC) or `/etc/emerge-monitor/agent.env` (systemd, see
+   `contrib/systemd/agent.env.example`), then start `emon-agent` the same way.
 
 4. Open `http://monitor.lan:8080/`.
+
+To try it out as a normal user, point every path somewhere you can write:
+
+```sh
+./emon-server -l 127.0.0.1:8080 -d ~/emon.db -t ~/emon.token
+./emon-agent  -s http://127.0.0.1:8080 -t ~/emon.token -S ~/emon-agent.state
+```
+
+(the agent then needs your user to be in group `portage`).
 
 On its first run the agent uploads the whole existing `emerge.log`, so the
 history (and the build-time averages) are available right away. Use
@@ -104,8 +147,9 @@ history (and the build-time averages) are available right away. Use
   behind a reverse proxy (nginx, caddy) with TLS and authentication.
 - The built-in HTTP server speaks plain HTTP. Use `https://` URLs on the agent
   side when a TLS reverse proxy is in front; libcurl handles it.
-- The agent only needs read access to `/var/log/emerge.log` (group `portage`)
-  and write access to its state file, so it does not have to run as root.
+- Do not run either daemon as root; see [Setup](#setup) for the permissions
+  they need. Membership in group `portage` gives read access to
+  `emerge.log` and some of Portage's state, nothing more.
 
 ## How it works
 

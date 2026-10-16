@@ -4,13 +4,17 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/bin/emon-server -l 0.0.0.0:8080 -d /var/lib/emerge-monitor/emon.db -t ${CREDENTIALS_DIRECTORY}/token
+# The token can stay root-only: systemd hands the service a private copy.
 LoadCredential=token:/etc/emerge-monitor/token
-DynamicUser=yes
+ExecStart=/usr/bin/emon-server -l 0.0.0.0:8080 -d /var/lib/emerge-monitor/emon.db -t ${CREDENTIALS_DIRECTORY}/token
+User=emon
+Group=emon
 StateDirectory=emerge-monitor
+StateDirectoryMode=0750
 Restart=on-failure
 ProtectSystem=strict
 ProtectHome=yes
+PrivateTmp=yes
 NoNewPrivileges=yes
 
 [Install]
