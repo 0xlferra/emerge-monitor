@@ -4,3 +4,4 @@
 /tests/test_parser
 /src/server/dashboard.c
 /tests/test_buildlog
+/build/

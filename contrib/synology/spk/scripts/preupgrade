@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Runs as root, with the package stopped. DSM replaces the package directory
+# on upgrade, so save the data (database, token, settings) first.
+. "$(dirname "$0")/common"
+
+rm -rf "$SAVED"
+if [ -d "$VAR" ]; then
+	cp -pR "$VAR" "$SAVED" || exit 1
+	rm -f "$SAVED/emon-server.pid"
+fi
+exit 0

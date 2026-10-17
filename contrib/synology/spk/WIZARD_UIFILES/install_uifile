@@ -1,0 +1,28 @@
+[
+	{
+		"step_title": "Agent token",
+		"items": [
+			{
+				"type": "textfield",
+				"desc": "The agents on your Gentoo machines authenticate with a shared token. Paste the token they already use (the content of /etc/emerge-monitor/token), or leave the field empty to generate a new one.",
+				"subitems": [
+					{
+						"key": "wizard_token",
+						"desc": "Token",
+						"defaultValue": "",
+						"validator": {
+							"allowBlank": true,
+							"regex": {
+								"expr": "/^[A-Za-z0-9+\\/=_.-]{16,200}$/",
+								"errorText": "16 to 200 characters: letters, digits and + / = _ . -"
+							}
+						}
+					}
+				]
+			},
+			{
+				"desc": "The dashboard listens on port 8080 (the agents use http://this-nas:8080). To change it, edit LISTEN in /var/packages/emerge-monitor/target/var/emon.conf and restart the package."
+			}
+		]
+	}
+]

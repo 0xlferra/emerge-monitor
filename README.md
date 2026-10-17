@@ -42,6 +42,11 @@ make install PREFIX=/usr
 
 `make emon-agent` or `make emon-server` builds only one of them. A live
 ebuild is in [`contrib/gentoo`](contrib/gentoo), see [Setup](#setup).
+`make SQLITE_SRC=/path/to/sqlite3.c` builds SQLite into `emon-server`
+instead of linking the system library.
+
+The server can also run on a Synology NAS as a DSM package, see
+[`contrib/synology`](contrib/synology).
 
 ## Setup
 

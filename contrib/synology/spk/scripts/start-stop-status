@@ -1,0 +1,63 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Runs as the package user. Exit codes as DSM expects: status gives 0 when
+# running, 3 when stopped.
+. "$(dirname "$0")/common"
+
+LISTEN="0.0.0.0:8080"
+EXTRA_OPTS=""
+# shellcheck source=/dev/null
+[ ! -r "$CONF" ] || . "$CONF"
+
+# The pid file may outlive the process (reboot, crash): make sure the pid
+# still belongs to emon-server. /proc/PID/comm is too new for DSM 6 kernels.
+running()
+{
+	[ -r "$PID" ] || return 1
+	pid=$(cat "$PID")
+	[ -n "$pid" ] && tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null |
+		head -n 1 | grep -q 'emon-server$'
+}
+
+start()
+{
+	running && return 0
+	# Keep the log small: the server only logs startup and errors.
+	if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1048576 ]; then
+		mv -f "$LOG" "$LOG.old"
+	fi
+	# shellcheck disable=SC2086 # EXTRA_OPTS holds several options
+	"$SYNOPKG_PKGDEST/bin/emon-server" -l "$LISTEN" -d "$VAR/emon.db" \
+		-t "$TOKEN" $EXTRA_OPTS >> "$LOG" 2>&1 &
+	echo $! > "$PID"
+	sleep 1
+	if ! running; then
+		echo "emon-server did not start:"
+		tail -n 5 "$LOG"
+		rm -f "$PID"
+		return 1
+	fi
+}
+
+stop()
+{
+	running || { rm -f "$PID"; return 0; }
+	pid=$(cat "$PID")
+	kill -TERM "$pid"
+	i=0
+	while kill -0 "$pid" 2>/dev/null && [ $i -lt 10 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	kill -KILL "$pid" 2>/dev/null
+	rm -f "$PID"
+}
+
+case "${1:-}" in
+start) start ;;
+stop) stop ;;
+restart) stop && start ;;
+status) running && exit 0 || exit 3 ;;
+log) echo "$LOG" ;;
+*) echo "usage: $0 start|stop|restart|status|log"; exit 1 ;;
+esac

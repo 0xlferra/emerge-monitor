@@ -16,3 +16,29 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libcurl4-openssl-dev pkg-config
       - name: Build and test
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 -g -Werror" check
+
+  synology-qoriq:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the package version counts commits
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-powerpc-linux-gnu tcl qemu-user busybox \
+            shellcheck libsqlite3-dev libcurl4-openssl-dev pkg-config
+      - name: Check package scripts
+        run: shellcheck -s sh -x -e SC1091 contrib/synology/*.sh contrib/synology/spk/scripts/*
+      - name: Build emon-server for e500v2 and test it under qemu
+        run: contrib/synology/build-qoriq.sh --test
+      - name: Test the package scripts
+        run: |
+          contrib/synology/test-spk.sh busybox
+          contrib/synology/test-spk.sh dash
+      - name: Build the package
+        run: contrib/synology/make-spk.sh build/qoriq/emon-server.stripped dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emerge-monitor-qoriq-spk
+          path: dist/*.spk

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6e5fa0"/>
+      <stop offset="1" stop-color="#3f3460"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+  <!-- ">>>", as emerge prints before each package -->
+  <g fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="50,72 92,108 50,144"/>
+    <polyline points="104,72 146,108 104,144"/>
+    <polyline points="158,72 200,108 158,144"/>
+  </g>
+  <!-- progress bar -->
+  <rect x="50" y="178" width="156" height="26" rx="13" fill="#ffffff" fill-opacity="0.25"/>
+  <rect x="50" y="178" width="104" height="26" rx="13" fill="#7ee08a"/>
+</svg>

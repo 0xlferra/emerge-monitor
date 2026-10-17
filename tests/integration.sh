@@ -2,9 +2,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # End-to-end test: run emon-server, feed it the sample log with emon-agent,
 # then check the JSON API.
+#
+# EMON_SERVER and EMON_AGENT override how the programs are run, e.g. to
+# test a cross-built server under qemu:
+#   EMON_SERVER="qemu-ppc -cpu e500v2 ./emon-server" tests/integration.sh
 set -eu
 cd "$(dirname "$0")/.."
 
+EMON_SERVER=${EMON_SERVER:-./emon-server}
+EMON_AGENT=${EMON_AGENT:-./emon-agent}
 tmp=$(mktemp -d)
 port=$((20000 + $$ % 20000))
 url="http://127.0.0.1:$port"
@@ -12,16 +18,16 @@ agent_pid=
 trap 'kill $srv $agent_pid 2>/dev/null || true; rm -rf "$tmp"' EXIT
 
 echo secret > "$tmp/token"
-./emon-server -l "127.0.0.1:$port" -d "$tmp/db" -t "$tmp/token" 2>"$tmp/server.log" &
+$EMON_SERVER -l "127.0.0.1:$port" -d "$tmp/db" -t "$tmp/token" 2>"$tmp/server.log" &
 srv=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 1 50); do
 	curl -fs "$url/api/v1/hosts" >/dev/null 2>&1 && break
 	sleep 0.2
 done
 
 fail() { echo "integration: FAIL: $*" >&2; cat "$tmp/server.log" >&2; exit 1; }
 agent() {
-	./emon-agent -s "$url" -n testbox -t "$tmp/token" \
+	$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" \
 		-l "$tmp/emerge.log" -S "$tmp/state" -T "$tmp" -L "" "$@" --once \
 		2>>"$tmp/agent-once.log"
 }
@@ -78,7 +84,7 @@ cat >> "$tmp/emerge.log" <<EOL
 1700030000:  *** emerge --oneshot dev-lang/rust
 1700030001:  >>> emerge (1 of 1) $atom to /
 EOL
-./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 	-S "$tmp/state" -T "$tmp" -L "" -i 1 2>"$tmp/agent.log" &
 agent_pid=$!
 
@@ -134,7 +140,7 @@ cat >> "$tmp/emerge.log" <<EOL
 1700040001:  >>> emerge (1 of 2) dev-libs/foo-2.0 to /
 1700040001:  >>> emerge (2 of 2) dev-libs/bar-1.0 to /
 EOL
-./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 	-S "$tmp/state" -T "$tmp" -L "$plog" -i 1 2>"$tmp/agent.log" &
 agent_pid=$!
 
@@ -149,7 +155,7 @@ grep -q "reading build logs from $plog" "$tmp/agent.log" || fail "agent.log: $(c
 
 # A PORTAGE_LOGDIR the agent cannot use is reported at startup.
 startup_msg() {
-	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 		-S "$tmp/state2" -T "$tmp" -L "$1" --once 2>&1 >/dev/null
 }
 startup_msg "$tmp/portage/logs" | grep -q "resets to mode 0700" ||
@@ -172,7 +178,7 @@ esac
 EOL
 chmod +x "$tmp/bin/portageq"
 msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
-	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 	-S "$tmp/state2" --once 2>&1 >/dev/null)
 echo "$msg" | grep -q "PORTAGE_TMPDIR=$tmp/emerge (portageq)" ||
 	fail "PORTAGE_TMPDIR source not reported: $msg"
@@ -189,7 +195,7 @@ echo "Permission denied: 'stat('/home/someone/overlay')'" >&2
 exit 13
 EOL
 msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
-	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 	-S "$tmp/state2" --once 2>&1 >/dev/null)
 echo "$msg" | grep -q "portageq envvar PORTAGE_TMPDIR failed (exit 13)" ||
 	fail "portageq failure not reported: $msg"
@@ -211,7 +217,7 @@ PORTAGE_TMPDIR) echo "$tmp/emerge" ;;
 esac
 EOL
 msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
-	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	$EMON_AGENT -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 	-S "$tmp/state2" --once 2>&1 >/dev/null)
 echo "$msg" | grep -q "PORTAGE_LOGDIR not used (not set in Portage's configuration)" ||
 	fail "unset PORTAGE_LOGDIR: $msg"

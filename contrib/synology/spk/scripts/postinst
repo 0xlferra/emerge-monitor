@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Runs as root. On upgrades postupgrade then puts the previous data back.
+. "$(dirname "$0")/common"
+
+mkdir -p "$VAR"
+
+if [ ! -f "$CONF" ]; then
+	cat > "$CONF" <<EOT
+# emerge monitor settings; restart the package after a change.
+# Address and port the dashboard and the agents connect to. The link in the
+# DSM main menu and the firewall rule assume port 8080.
+LISTEN="0.0.0.0:8080"
+# More emon-server options, if any.
+EXTRA_OPTS=""
+EOT
+fi
+
+if [ -n "${wizard_token:-}" ]; then
+	printf '%s\n' "$wizard_token" > "$TOKEN"
+elif [ ! -s "$TOKEN" ]; then
+	od -An -tx1 -N24 /dev/urandom | tr -d ' \n' > "$TOKEN"
+	echo >> "$TOKEN"
+	if [ "${SYNOPKG_PKG_STATUS:-}" != UPGRADE ]; then
+		notify "A new agent token was generated. Copy it to /etc/emerge-monitor/token on every Gentoo machine: as root on the NAS, run cat $TOKEN"
+	fi
+fi
+
+fix_ownership
+exit 0

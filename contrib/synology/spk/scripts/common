@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Shared by the package scripts; DSM runs them with SYNOPKG_* set.
+# shellcheck shell=sh disable=SC2034 # variables are used by the scripts
+
+PKG_USER=${PKG_USER:-emerge-monitor}   # overridable for tests
+# DSM 6 has no per-package var dir: keep data inside the package and carry
+# it across upgrades (see preupgrade/postupgrade).
+VAR="${SYNOPKG_PKGDEST}/var"
+CONF="$VAR/emon.conf"
+TOKEN="$VAR/token"
+LOG="$VAR/emon-server.log"
+PID="$VAR/emon-server.pid"
+SAVED="${SYNOPKG_TEMP_UPGRADE_FOLDER:-/tmp}/emerge-monitor-var"
+
+# Text written to SYNOPKG_TEMP_LOGFILE is shown in Package Center.
+notify()
+{
+	if [ -n "${SYNOPKG_TEMP_LOGFILE:-}" ]; then
+		echo "$*" >> "$SYNOPKG_TEMP_LOGFILE"
+	fi
+}
+
+fix_ownership()
+{
+	chown -R "$PKG_USER" "$VAR"
+	chmod 700 "$VAR"
+	[ ! -f "$TOKEN" ] || chmod 600 "$TOKEN"
+}

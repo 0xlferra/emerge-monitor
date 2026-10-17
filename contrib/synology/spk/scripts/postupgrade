@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Runs as root: put back what preupgrade saved.
+. "$(dirname "$0")/common"
+
+if [ -d "$SAVED" ]; then
+	mkdir -p "$VAR"
+	cp -pR "$SAVED"/. "$VAR"/ || exit 1
+	rm -rf "$SAVED"
+fi
+fix_ownership
+exit 0

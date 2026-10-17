@@ -8,6 +8,8 @@
 #include "../common/util.h"
 
 #define BL_MAX 64
+/* Buffers start small and grow up to BL_CAP: most logs never get there. */
+#define BL_INITIAL (16 * 1024)
 
 typedef struct {
 	char host[HOSTNAME_MAX + 1];
@@ -16,6 +18,7 @@ typedef struct {
 	long long base;      /* file offset of buf[0] */
 	char *buf;           /* NULL: slot unused */
 	size_t len;
+	size_t size;         /* allocated */
 	long long updated;
 } blog;
 
@@ -51,9 +54,10 @@ static blog *create(const char *host, const char *atom, long long now)
 		}
 	}
 	drop(slot);
-	slot->buf = malloc(BL_CAP);
+	slot->buf = malloc(BL_INITIAL);
 	if (!slot->buf)
 		abort();
+	slot->size = BL_INITIAL;
 	snprintf(slot->host, sizeof(slot->host), "%s", host);
 	snprintf(slot->atom, sizeof(slot->atom), "%s", atom);
 	slot->base = -1;
@@ -96,6 +100,18 @@ void bl_append(const char *host, const char *atom, unsigned long long inode,
 			b->len -= excess;
 			b->base += (long long)excess;
 		}
+	}
+	if (b->len + len > b->size) {
+		size_t size = b->size;
+		while (size < b->len + len)
+			size *= 2;
+		if (size > BL_CAP)
+			size = BL_CAP;
+		char *p = realloc(b->buf, size);
+		if (!p)
+			abort();
+		b->buf = p;
+		b->size = size;
 	}
 	memcpy(b->buf + b->len, data, len);
 	b->len += len;
