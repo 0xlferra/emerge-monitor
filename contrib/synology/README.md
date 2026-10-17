@@ -53,7 +53,35 @@ The firewall rule (Control Panel → Security → Firewall) can select
 
 ## Build
 
-On Debian/Ubuntu (what CI uses):
+You only need a new package when the server changes (`src/server`,
+`src/common`, the dashboard, or the files here); agent-only changes do not
+affect it.
+
+**From CI**, no tools needed: every push to `main` builds the package. Take
+it from the latest successful run of the CI workflow on GitHub (artifact
+`emerge-monitor-qoriq-spk`, a zip holding the `.spk`; artifacts are kept 90
+days), or with the GitHub CLI:
+
+```sh
+run=$(gh run list -R 0xlferra/emerge-monitor -w CI -b main -s success -L 1 \
+      --json databaseId -q '.[0].databaseId')
+gh run download "$run" -R 0xlferra/emerge-monitor -n emerge-monitor-qoriq-spk -D dist
+```
+
+**On Gentoo:**
+
+```sh
+emerge --ask sys-devel/crossdev dev-lang/tcl
+crossdev -t powerpc-unknown-linux-gnu        # once, needs a crossdev overlay
+CROSS=powerpc-unknown-linux-gnu- contrib/synology/build-qoriq.sh
+contrib/synology/make-spk.sh build/qoriq/emon-server.stripped
+```
+
+For `--test` also build QEMU's PowerPC user emulator
+(`QEMU_USER_TARGETS="ppc"` for `app-emulation/qemu`) plus the agent's
+dependencies.
+
+**On Debian/Ubuntu** (what CI uses):
 
 ```sh
 sudo apt-get install gcc-powerpc-linux-gnu tcl git make \
@@ -61,6 +89,15 @@ sudo apt-get install gcc-powerpc-linux-gnu tcl git make \
 contrib/synology/build-qoriq.sh --test
 contrib/synology/make-spk.sh build/qoriq/emon-server.stripped
 ```
+
+The first run fetches and builds the toolchain under `build/qoriq/` (about
+a minute); later runs reuse it and only rebuild `emon-server`. Delete
+`build/qoriq` to start over, e.g. after changing the pinned versions.
+
+The package version is `0.1-<number of commits>`, so commit before building:
+DSM only offers to upgrade to a higher version. Installing a newer `.spk`
+over the old one with Manual Install upgrades it in place; the wizard is not
+shown again and the database, token and settings are kept.
 
 `build-qoriq.sh` builds, from pinned and verified sources:
 

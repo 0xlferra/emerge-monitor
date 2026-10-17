@@ -11,7 +11,10 @@
 # sidesteps the old kernel, which a current glibc refuses to run on.
 #
 # Needs: git, make, a native cc, tclsh (to generate SQLite's amalgamation),
-# powerpc-linux-gnu-gcc and binutils (Debian/Ubuntu: gcc-powerpc-linux-gnu).
+# a 32-bit PowerPC cross gcc and binutils (Debian/Ubuntu:
+# gcc-powerpc-linux-gnu; Gentoo: crossdev -t powerpc-unknown-linux-gnu, then
+# run with CROSS=powerpc-unknown-linux-gnu-). Its libc and libgcc are not
+# used, so any 32-bit PowerPC Linux gcc will do.
 # With --test also qemu-ppc (qemu-user), curl and libcurl/sqlite3 dev files
 # to build the native agent the tests talk to.
 #
@@ -26,7 +29,9 @@ LLVM_COMMIT=3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff
 SQLITE_TAG=version-3.46.1
 SQLITE_COMMIT=f3d536d37825302e31ed0eddd811c689f38f85a3
 
-CROSS=powerpc-linux-gnu-
+# Prefix of the PowerPC cross tools: Debian/Ubuntu name them
+# powerpc-linux-gnu-*, Gentoo's crossdev powerpc-unknown-linux-gnu-*.
+CROSS=${CROSS:-powerpc-linux-gnu-}
 CPU_FLAGS="-msoft-float -mlong-double-64 -mcpu=powerpc"
 
 run_tests=0
@@ -41,7 +46,7 @@ jobs=$(nproc 2>/dev/null || echo 2)
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'build-qoriq: %s\n' "$*" >&2; exit 1; }
 
-for tool in git make tclsh ${CROSS}gcc ${CROSS}ar ${CROSS}objdump; do
+for tool in git make tclsh "${CROSS}gcc" "${CROSS}ar" "${CROSS}objdump"; do
 	command -v "$tool" >/dev/null || die "missing $tool"
 done
 
@@ -80,12 +85,12 @@ if [ ! -f "$sysroot/lib/libc.a" ]; then
 	mkdir -p "$B/musl-build"
 	cd "$B/musl-build"
 	"$B/src/musl/configure" --target=powerpc-linux-musl --prefix="$sysroot" \
-		--disable-shared CC=${CROSS}gcc CFLAGS="$CPU_FLAGS -O2" >/dev/null
+		--disable-shared CC="${CROSS}gcc" CFLAGS="$CPU_FLAGS -O2" >/dev/null
 	grep -q '^SUBARCH = -sf' config.mak ||
 		die "musl did not configure for soft-float"
-	make -s -j"$jobs" AR=${CROSS}ar RANLIB=${CROSS}ranlib >../musl-build.log 2>&1 ||
+	make -s -j"$jobs" AR="${CROSS}ar" RANLIB="${CROSS}ranlib" >../musl-build.log 2>&1 ||
 		die "musl build failed, see $B/musl-build.log"
-	make -s install AR=${CROSS}ar RANLIB=${CROSS}ranlib >/dev/null
+	make -s install AR="${CROSS}ar" RANLIB="${CROSS}ranlib" >/dev/null
 	cd "$top"
 fi
 
@@ -115,7 +120,7 @@ if [ ! -f "$sysroot/lib/libsoftfp.a" ]; then
 		"$cc" -c -O2 -fno-builtin -I"$builtins" \
 			-o "$rt/$(basename "$f" .c).o" "$f" 2>/dev/null || true
 	done
-	${CROSS}ar rcs "$sysroot/lib/libsoftfp.a" "$rt"/*.o
+	"${CROSS}ar" rcs "$sysroot/lib/libsoftfp.a" "$rt"/*.o
 fi
 
 # --- SQLite amalgamation -----------------------------------------------------
@@ -138,11 +143,11 @@ mkdir -p "$tree"
 make -s -C "$tree" emon-server CC="$cc" CFLAGS="-O2" \
 	SQLITE_SRC="$B/sqlite-build/sqlite3.c"
 cp "$tree/emon-server" "$B/emon-server"
-${CROSS}strip -o "$B/emon-server.stripped" "$B/emon-server"
+"${CROSS}strip" -o "$B/emon-server.stripped" "$B/emon-server"
 
 # The e500v2 traps on classic FPU instructions: make sure there are none.
 log "checking for instructions the e500v2 lacks"
-bad=$(${CROSS}objdump -d "$B/emon-server" |
+bad=$("${CROSS}objdump" -d "$B/emon-server" |
 	awk -F'\t' 'NF >= 3 { split($3, a, " "); print a[1] }' | sort -u |
 	grep -E '^(f[a-z]+|lf[sd]u?x?|stf[sd]u?x?|stfiwx|mffs.?|mtfs.*|lwsync)$' || true)
 [ -z "$bad" ] || die "unsupported instructions in emon-server: $bad"
