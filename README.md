@@ -180,7 +180,7 @@ history (and the build-time averages) are available right away. Use
 | `-i, --interval SEC` | poll interval (default 2) |
 | `-e, --from-end` | on first run, skip existing history |
 | `-L, --portage-logdir DIR` | Portage's `PORTAGE_LOGDIR`, where build logs are read from (default: `$PORTAGE_LOGDIR`, else asked to `portageq`; `""` to use `PORTAGE_TMPDIR`) |
-| `-T, --portage-tmpdir DIR` | Portage's `PORTAGE_TMPDIR`, used when there is no `PORTAGE_LOGDIR` (default: `$PORTAGE_TMPDIR`, else `/var/tmp`) |
+| `-T, --portage-tmpdir DIR` | Portage's `PORTAGE_TMPDIR`, used when there is no `PORTAGE_LOGDIR` and to check that `PORTAGE_LOGDIR` is not inside it (default: `$PORTAGE_TMPDIR`, else asked to `portageq`, else `/var/tmp`) |
 | `-B, --no-build-logs` | do not send the `build.log` of running builds |
 | `-1, --once` | upload what is there and exit (useful from cron) |
 

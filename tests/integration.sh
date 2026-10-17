@@ -161,6 +161,24 @@ startup_msg "$tmp/token" | grep -q "not a directory" ||
 startup_msg "$plog" | grep -q "warning" &&
 	fail "spurious warning for a good PORTAGE_LOGDIR"
 
+# Without options or environment, both directories come from portageq.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/portageq" <<EOL
+#!/bin/sh
+case "\$2" in
+PORTAGE_TMPDIR) echo "$tmp/emerge" ;;
+PORTAGE_LOGDIR) echo "$tmp/emerge/portage/logs" ;;
+esac
+EOL
+chmod +x "$tmp/bin/portageq"
+msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
+	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	-S "$tmp/state2" --once 2>&1 >/dev/null)
+echo "$msg" | grep -q "reading build logs from $tmp/emerge/portage/logs" ||
+	fail "PORTAGE_LOGDIR not taken from portageq: $msg"
+echo "$msg" | grep -q "inside $tmp/emerge/portage, which Portage resets" ||
+	fail "PORTAGE_TMPDIR not taken from portageq: $msg"
+
 # Atoms are used to build paths on the agent: reject anything odd.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' \
 	"$url/api/v1/buildlog?host=testbox&atom=../../etc/passwd")

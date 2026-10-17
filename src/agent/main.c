@@ -559,14 +559,20 @@ static void check_logdir(const config *cfg)
 			S_ISDIR(st.st_mode) ? strerror(errno) : "not a directory");
 }
 
-/* PORTAGE_LOGDIR from the environment, else from Portage's configuration. */
-static const char *detect_logdir(char *buf, size_t len)
+/*
+ * A Portage variable from the environment, else from Portage's own
+ * configuration (make.conf and profiles) via portageq. `name` must be a
+ * constant: it goes into a shell command line.
+ */
+static const char *portage_var(const char *name, char *buf, size_t len)
 {
-	const char *env = getenv("PORTAGE_LOGDIR");
+	char cmd[128];
+	const char *env = getenv(name);
 	if (env)
 		return env;
 
-	FILE *p = popen("portageq envvar PORTAGE_LOGDIR 2>/dev/null", "r");
+	snprintf(cmd, sizeof(cmd), "portageq envvar %s 2>/dev/null", name);
+	FILE *p = popen(cmd, "r");
 	if (!p)
 		return NULL;
 	if (!fgets(buf, (int)len, p))
@@ -587,8 +593,8 @@ static void usage(FILE *f)
 		"  -S, --state PATH        state file (default %s)\n"
 		"  -i, --interval SEC      poll interval (default 2)\n"
 		"  -e, --from-end          on first run skip existing history\n"
-		"  -T, --portage-tmpdir DIR  PORTAGE_TMPDIR (default $PORTAGE_TMPDIR\n"
-		"                          or /var/tmp)\n"
+		"  -T, --portage-tmpdir DIR  PORTAGE_TMPDIR (default $PORTAGE_TMPDIR,\n"
+		"                          else asks portageq, else /var/tmp)\n"
 		"  -L, --portage-logdir DIR  PORTAGE_LOGDIR to read build logs from\n"
 		"                          (default $PORTAGE_LOGDIR, else asks portageq;\n"
 		"                          \"\" to read them from PORTAGE_TMPDIR)\n"
@@ -649,14 +655,16 @@ int main(int argc, char **argv)
 	}
 	if (cfg.interval < 1)
 		cfg.interval = 1;
-	if (!cfg.portage_tmpdir) {
-		const char *t = getenv("PORTAGE_TMPDIR");
-		cfg.portage_tmpdir = t && *t ? t : "/var/tmp";
-	}
 	if (cfg.build_logs) {
-		static char logdir[4096];
+		static char tmpdir[4096], logdir[4096];
+		if (!cfg.portage_tmpdir)
+			cfg.portage_tmpdir = portage_var("PORTAGE_TMPDIR", tmpdir,
+							 sizeof(tmpdir));
+		if (!cfg.portage_tmpdir || !*cfg.portage_tmpdir)
+			cfg.portage_tmpdir = "/var/tmp";
 		if (!cfg.portage_logdir)
-			cfg.portage_logdir = detect_logdir(logdir, sizeof(logdir));
+			cfg.portage_logdir = portage_var("PORTAGE_LOGDIR", logdir,
+							 sizeof(logdir));
 		if (cfg.portage_logdir && !*cfg.portage_logdir)
 			cfg.portage_logdir = NULL;
 		fprintf(stderr, "emon-agent: reading build logs from %s%s\n",
