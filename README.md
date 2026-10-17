@@ -50,7 +50,7 @@ daemons as the unprivileged user `emon`:
 
 | | needs |
 |---|---|
-| emon-agent | read `/var/log/emerge.log` (`root:portage`, mode `0660`, so `emon` must be in group `portage`) and the `build.log` files under `$PORTAGE_TMPDIR/portage` (also via group `portage`), read the token, write `/var/lib/emerge-monitor/agent.state` |
+| emon-agent | read `/var/log/emerge.log` (`root:portage`, mode `0660`, so `emon` must be in group `portage`) and the build logs in `PORTAGE_LOGDIR` (also via group `portage`, see [Build logs](#build-logs)), read the token, write `/var/lib/emerge-monitor/agent.state` |
 | emon-server | read the token, write `/var/lib/emerge-monitor/emon.db` |
 
 ### With the ebuild
@@ -81,6 +81,38 @@ install -d -o root -g emon -m 0750 /etc/emerge-monitor
 ```
 
 On the server machine you can drop `-G portage` if no agent runs there.
+
+### Build logs
+
+To show the live build log, the agent has to read it, and with the default
+Portage setup it cannot: Portage forces `$PORTAGE_TMPDIR/portage` and
+`$PORTAGE_TMPDIR/portage/<category>` to mode `0700 portage:portage`, so
+`temp/build.log` is out of reach for anyone but `portage` and root, even
+though the file itself is group-readable.
+
+Set `PORTAGE_LOGDIR` in `/etc/portage/make.conf` on every machine running an
+agent:
+
+```sh
+PORTAGE_LOGDIR="/var/log/portage"
+```
+
+Portage then writes each build log there while the package builds (the
+directory is created `2770 portage:portage`, so group `portage` can read it)
+and `temp/build.log` becomes a symlink to it. Both the default layout and
+`FEATURES="split-log"` work; `FEATURES="compress-build-logs"` does not, since a
+log that is being gzipped cannot be followed. The logs are kept after the
+build, so you may want to clean old ones up, e.g. with `PORTAGE_LOGDIR_CLEAN`
+(see `make.conf(5)`).
+
+The agent finds the directory by itself (`$PORTAGE_LOGDIR`, else
+`portageq envvar PORTAGE_LOGDIR` at startup) and prints where it reads build
+logs from; restart it after changing `make.conf`. Without `PORTAGE_LOGDIR` it
+falls back to `$PORTAGE_TMPDIR/portage/<cat>/<pf>/temp/build.log`, which only
+works if the agent runs as `portage` or root. Running it as `portage` is
+possible but not recommended: that user owns the build directories whose
+contents get installed as root, so a compromised network-facing agent could
+tamper with builds.
 
 ### Configuration
 
@@ -134,7 +166,8 @@ history (and the build-time averages) are available right away. Use
 | `-S, --state PATH` | where the read position is kept (default `/var/lib/emerge-monitor/agent.state`) |
 | `-i, --interval SEC` | poll interval (default 2) |
 | `-e, --from-end` | on first run, skip existing history |
-| `-T, --portage-tmpdir DIR` | Portage's `PORTAGE_TMPDIR` (default: `$PORTAGE_TMPDIR`, else `/var/tmp`) |
+| `-L, --portage-logdir DIR` | Portage's `PORTAGE_LOGDIR`, where build logs are read from (default: `$PORTAGE_LOGDIR`, else asked to `portageq`; `""` to use `PORTAGE_TMPDIR`) |
+| `-T, --portage-tmpdir DIR` | Portage's `PORTAGE_TMPDIR`, used when there is no `PORTAGE_LOGDIR` (default: `$PORTAGE_TMPDIR`, else `/var/tmp`) |
 | `-B, --no-build-logs` | do not send the `build.log` of running builds |
 | `-1, --once` | upload what is there and exit (useful from cron) |
 
@@ -184,10 +217,11 @@ failed) or *aborted* (session interrupted).
 ### Live build logs
 
 The reply to every ingest request lists the packages the server thinks are
-building on that host. The agent follows
-`$PORTAGE_TMPDIR/portage/<category>/<package-version>/temp/build.log` for each
-of them, starting with the last 64 KiB, and posts new output to
-`/api/v1/buildlog`. Atoms are validated on both sides so the server cannot make
+building on that host, with the time emerge started each one. The agent
+follows each package's build log, starting with its last 64 KiB, and posts new
+output to `/api/v1/buildlog`. In `PORTAGE_LOGDIR` the log of the current build
+is told apart from older logs of the same version (an earlier failed attempt)
+by the start time Portage puts in the file name. Atoms are validated on both sides so the server cannot make
 the agent read anything outside that directory. When a package leaves the list
 the agent sends the file's last lines, then stops.
 

@@ -96,6 +96,24 @@ int main(int argc, char **argv)
 	check_pn("app-misc/foo-1.0_rc2-r10", "app-misc/foo");
 	check_lines();
 
+	/* 1700000000 = 2023-11-14 22:13:20 UTC */
+	CHECK(el_logdir_match("dev-lang:rust-1.80.0:20231114-221320.log",
+			      "dev-lang", "rust-1.80.0") == 1700000000);
+	CHECK(el_logdir_match("dev-lang_rust-1.80.0_20231114-221320.log",
+			      "dev-lang", "rust-1.80.0") == 1700000000);
+	CHECK(el_logdir_match("dev-lang::rust-1.80.0::20231114-221320.log",
+			      "dev-lang", "rust-1.80.0") == 1700000000);
+	CHECK(el_logdir_match("rust-1.80.0:20231114-221320.log",
+			      NULL, "rust-1.80.0") == 1700000000);
+	CHECK(el_logdir_match("dev-lang:rust-1.80.0-r1:20231114-221320.log",
+			      "dev-lang", "rust-1.80.0") < 0);
+	CHECK(el_logdir_match("dev-lang:rust-1.80.0:20231114-221320.log.gz",
+			      "dev-lang", "rust-1.80.0") < 0);
+	CHECK(el_logdir_match("dev-lang:rust-1.80.0:summary.log",
+			      "dev-lang", "rust-1.80.0") < 0);
+	CHECK(el_logdir_match("rust-1.80.0:20231114-221320.log",
+			      "dev-lang", "rust-1.80.0") < 0);
+
 	CHECK(valid_atom("sys-libs/zlib-1.3-r1"));
 	CHECK(valid_atom("x11-libs/gtk+-3.24.38"));
 	CHECK(!valid_atom("../etc/passwd"));

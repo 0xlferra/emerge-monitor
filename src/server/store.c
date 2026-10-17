@@ -401,7 +401,7 @@ int store_json_building(store *s, const char *host, sbuf *out)
 {
 	s->err = 0;
 	sqlite3_stmt *st = prep(s,
-		"SELECT p.atom FROM packages p"
+		"SELECT p.atom, p.start_ts FROM packages p"
 		" JOIN sessions s ON s.id = p.session_id"
 		" JOIN hosts h ON h.id = s.host_id"
 		" WHERE h.name=? AND s.end_ts IS NULL AND p.status='building'"
@@ -410,9 +410,9 @@ int store_json_building(store *s, const char *host, sbuf *out)
 		return -1;
 	sb_puts(out, "[");
 	for (int i = 0; sqlite3_step(st) == SQLITE_ROW; i++) {
-		if (i)
-			sb_puts(out, ",");
-		sb_json_str(out, (const char *)sqlite3_column_text(st, 0));
+		sb_puts(out, i ? ",{" : "{");
+		json_fields(out, st, 0);
+		sb_puts(out, "}");
 	}
 	sqlite3_finalize(st);
 	sb_puts(out, "]");

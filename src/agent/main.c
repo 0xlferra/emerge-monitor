@@ -8,9 +8,12 @@
  * state file so restarts neither lose nor duplicate data.
  *
  * The server answers with the packages it believes are building on this
- * host; the agent follows their build.log files under PORTAGE_TMPDIR and
- * ships those too, so they can be watched live from the dashboard.
+ * host; the agent follows their build logs and ships those too, so they can
+ * be watched live from the dashboard. Logs are read from PORTAGE_LOGDIR when
+ * that is set, because Portage keeps PORTAGE_TMPDIR/portage/<category>
+ * readable by user portage only.
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -24,6 +27,7 @@
 
 #include <curl/curl.h>
 
+#include "../common/emerge_log.h"
 #include "../common/sbuf.h"
 #include "../common/util.h"
 
@@ -45,6 +49,7 @@ typedef struct {
 	const char *log_path;
 	const char *state_path;
 	const char *portage_tmpdir;
+	const char *portage_logdir;     /* NULL: read from PORTAGE_TMPDIR */
 	char host[HOSTNAME_MAX + 1];
 	char token[256];
 	int interval;
@@ -60,12 +65,14 @@ typedef struct {
 	long long offset;
 } logpos;
 
-/* A build.log the server asked us to follow. */
+/* A build log the server asked us to follow. */
 typedef struct {
 	char atom[256];
+	long long start_ts;     /* when emerge started the package, 0 if unknown */
+	char path[4096];        /* log found in PORTAGE_LOGDIR, "" until then */
 	unsigned long long inode;
-	long long offset;   /* -1: not opened yet */
-	int wanted;         /* still in the server's list */
+	long long offset;       /* -1: not opened yet */
+	int wanted;             /* still in the server's list */
 	int warned;
 } tail;
 
@@ -212,20 +219,21 @@ static void set_wanted(const char *reply)
 		return;
 	p += strlen("\"building\":[");
 
-	while (*p && *p != ']') {
-		if (*p != '"') {
-			p++;
-			continue;
-		}
-		const char *start = p + 1, *q = strchr(start, '"');
-		if (!q)
+	/* [{"atom":"cat/pf","start_ts":N},...] */
+	while ((p = strchr(p, '{')) != NULL) {
+		const char *end = strchr(p, '}');
+		const char *a = strstr(p, "\"atom\":\"");
+		const char *ts = strstr(p, "\"start_ts\":");
+		if (!end || !a || a > end)
 			break;
-		p = q + 1;
+		a += strlen("\"atom\":\"");
+		const char *q = memchr(a, '"', (size_t)(end - a));
 		char atom[256];
-		size_t n = (size_t)(q - start);
+		size_t n = q ? (size_t)(q - a) : sizeof(atom);
+		p = end + 1;
 		if (n >= sizeof(atom))
 			continue;
-		memcpy(atom, start, n);
+		memcpy(atom, a, n);
 		atom[n] = '\0';
 		if (!valid_atom(atom))
 			continue; /* never let the server pick arbitrary paths */
@@ -238,6 +246,8 @@ static void set_wanted(const char *reply)
 				continue;
 			memset(&tails[i], 0, sizeof(tails[i]));
 			snprintf(tails[i].atom, sizeof(tails[i].atom), "%s", atom);
+			if (ts && ts < end)
+				tails[i].start_ts = atoll(ts + strlen("\"start_ts\":"));
 			tails[i].offset = -1;
 			ntails++;
 		}
@@ -245,21 +255,79 @@ static void set_wanted(const char *reply)
 	}
 }
 
+/* Keep the newest log in `dir` named for cat/pf (cat NULL: split-log). */
+static void scan_logdir(const char *dir, const char *cat, const char *pf,
+			long long min_ts, long long *best, char *out,
+			size_t outlen)
+{
+	DIR *d = opendir(dir);
+	struct dirent *de;
+	if (!d)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		long long ts = el_logdir_match(de->d_name, cat, pf);
+		if (ts >= min_ts && ts > *best) {
+			*best = ts;
+			snprintf(out, outlen, "%s/%s", dir, de->d_name);
+		}
+	}
+	closedir(d);
+}
+
+/*
+ * Find the log of the current build in PORTAGE_LOGDIR. Older logs of the
+ * same version (an earlier failed attempt, say) are skipped by comparing
+ * the build start in the file name with when emerge started the package.
+ */
+static int find_logdir_log(const config *cfg, tail *t)
+{
+	char cat[256], dir[4096], path[4096];
+	const char *pf = strchr(t->atom, '/') + 1;
+	long long best = -1;
+	/* Name times have one-second resolution; allow a little slack. */
+	long long min_ts = t->start_ts > 0 ? t->start_ts - 60 : 0;
+
+	snprintf(cat, sizeof(cat), "%.*s", (int)(pf - 1 - t->atom), t->atom);
+	scan_logdir(cfg->portage_logdir, cat, pf, min_ts, &best, path,
+		    sizeof(path));
+	snprintf(dir, sizeof(dir), "%s/build/%s", cfg->portage_logdir, cat);
+	scan_logdir(dir, NULL, pf, min_ts, &best, path, sizeof(path));
+	if (best < 0)
+		return -1;
+	snprintf(t->path, sizeof(t->path), "%s", path);
+	return 0;
+}
+
 static void follow_one(const config *cfg, tail *t, char *buf)
 {
-	char path[4096];
+	char tmp_path[4096];
+	const char *path;
 	struct stat st;
 
-	snprintf(path, sizeof(path), "%s/portage/%s/temp/build.log",
-		 cfg->portage_tmpdir, t->atom);
+	if (cfg->portage_logdir) {
+		/* not written yet (still fetching), or not there at all */
+		if (!t->path[0] && find_logdir_log(cfg, t) < 0)
+			return;
+		path = t->path;
+	} else {
+		snprintf(tmp_path, sizeof(tmp_path), "%s/portage/%s/temp/build.log",
+			 cfg->portage_tmpdir, t->atom);
+		path = tmp_path;
+	}
+
 	int fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0) {
 		/* ENOENT is normal: not created yet, or cleaned after merge */
-		if (errno != ENOENT && !t->warned) {
-			fprintf(stderr, "emon-agent: %s: %s (is the agent user in "
-					"group portage?)\n", path, strerror(errno));
-			t->warned = 1;
-		}
+		int err = errno;
+		if (err == ENOENT || t->warned)
+			return;
+		fprintf(stderr, "emon-agent: %s: %s\n", path, strerror(err));
+		if (err == EACCES && !cfg->portage_logdir)
+			fprintf(stderr, "emon-agent: Portage keeps %s/portage/<category> "
+				"at mode 0700; set PORTAGE_LOGDIR in make.conf so "
+				"build logs are readable by group portage (see README)\n",
+				cfg->portage_tmpdir);
+		t->warned = 1;
 		return;
 	}
 	if (fstat(fd, &st) < 0)
@@ -436,6 +504,23 @@ static int run(const config *cfg)
 	return 0;
 }
 
+/* PORTAGE_LOGDIR from the environment, else from Portage's configuration. */
+static const char *detect_logdir(char *buf, size_t len)
+{
+	const char *env = getenv("PORTAGE_LOGDIR");
+	if (env)
+		return env;
+
+	FILE *p = popen("portageq envvar PORTAGE_LOGDIR 2>/dev/null", "r");
+	if (!p)
+		return NULL;
+	if (!fgets(buf, (int)len, p))
+		buf[0] = '\0';
+	pclose(p);
+	buf[strcspn(buf, "\n")] = '\0';
+	return buf[0] ? buf : NULL;
+}
+
 static void usage(FILE *f)
 {
 	fprintf(f,
@@ -449,6 +534,9 @@ static void usage(FILE *f)
 		"  -e, --from-end          on first run skip existing history\n"
 		"  -T, --portage-tmpdir DIR  PORTAGE_TMPDIR (default $PORTAGE_TMPDIR\n"
 		"                          or /var/tmp)\n"
+		"  -L, --portage-logdir DIR  PORTAGE_LOGDIR to read build logs from\n"
+		"                          (default $PORTAGE_LOGDIR, else asks portageq;\n"
+		"                          \"\" to read them from PORTAGE_TMPDIR)\n"
 		"  -B, --no-build-logs     do not send build.log of running builds\n"
 		"  -1, --once              ship what is there, then exit\n"
 		"  -v, --verbose           log every upload\n"
@@ -474,6 +562,7 @@ int main(int argc, char **argv)
 		{"interval", required_argument, NULL, 'i'},
 		{"from-end", no_argument, NULL, 'e'},
 		{"portage-tmpdir", required_argument, NULL, 'T'},
+		{"portage-logdir", required_argument, NULL, 'L'},
 		{"no-build-logs", no_argument, NULL, 'B'},
 		{"once", no_argument, NULL, '1'},
 		{"verbose", no_argument, NULL, 'v'},
@@ -481,7 +570,7 @@ int main(int argc, char **argv)
 		{0},
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "s:n:t:l:S:i:eT:B1vh", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "s:n:t:l:S:i:eT:L:B1vh", opts, NULL)) != -1) {
 		switch (c) {
 		case 's': cfg.server = optarg; break;
 		case 'n': snprintf(cfg.host, sizeof(cfg.host), "%s", optarg); break;
@@ -491,6 +580,7 @@ int main(int argc, char **argv)
 		case 'i': cfg.interval = atoi(optarg); break;
 		case 'e': cfg.from_end = 1; break;
 		case 'T': cfg.portage_tmpdir = optarg; break;
+		case 'L': cfg.portage_logdir = optarg; break;
 		case 'B': cfg.build_logs = 0; break;
 		case '1': cfg.once = 1; break;
 		case 'v': cfg.verbose = 1; break;
@@ -507,6 +597,16 @@ int main(int argc, char **argv)
 	if (!cfg.portage_tmpdir) {
 		const char *t = getenv("PORTAGE_TMPDIR");
 		cfg.portage_tmpdir = t && *t ? t : "/var/tmp";
+	}
+	if (cfg.build_logs) {
+		static char logdir[4096];
+		if (!cfg.portage_logdir)
+			cfg.portage_logdir = detect_logdir(logdir, sizeof(logdir));
+		if (cfg.portage_logdir && !*cfg.portage_logdir)
+			cfg.portage_logdir = NULL;
+		fprintf(stderr, "emon-agent: reading build logs from %s%s\n",
+			cfg.portage_logdir ? cfg.portage_logdir : cfg.portage_tmpdir,
+			cfg.portage_logdir ? "" : "/portage");
 	}
 
 	if (!cfg.host[0]) {

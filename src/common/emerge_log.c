@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int starts(const char *s, const char *prefix)
 {
@@ -77,6 +78,45 @@ int el_parse_line(const char *line, size_t len, el_event *ev)
 		return 0;
 	}
 	return 1;
+}
+
+/* "YYYYMMDD-HHMMSS.log" -> unix time, or -1 */
+static long long parse_log_stamp(const char *s)
+{
+	struct tm tm = {0};
+	for (int i = 0; i < 15; i++)
+		if (i == 8 ? s[i] != '-' : !isdigit((unsigned char)s[i]))
+			return -1;
+	if (strcmp(s + 15, ".log"))
+		return -1;
+	if (sscanf(s, "%4d%2d%2d-%2d%2d%2d", &tm.tm_year, &tm.tm_mon,
+		   &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6)
+		return -1;
+	tm.tm_year -= 1900;
+	tm.tm_mon -= 1;
+	return (long long)timegm(&tm);
+}
+
+long long el_logdir_match(const char *name, const char *cat, const char *pf)
+{
+	const size_t stamp = strlen("YYYYMMDD-HHMMSS.log");
+	size_t n = strlen(name), lc = cat ? strlen(cat) : 0, lp = strlen(pf);
+	size_t nseps = cat ? 2 : 1;
+
+	/* The separator is not known, but every other length is. */
+	if (n < lc + lp + stamp + nseps || (n - lc - lp - stamp) % nseps)
+		return -1;
+	size_t ls = (n - lc - lp - stamp) / nseps;
+	const char *sep = name + (cat ? lc : lp);
+
+	if (cat) {
+		if (strncmp(name, cat, lc) || strncmp(name + lc + ls, pf, lp) ||
+		    strncmp(name + lc + ls + lp, sep, ls))
+			return -1;
+	} else if (strncmp(name, pf, lp)) {
+		return -1;
+	}
+	return parse_log_stamp(name + n - stamp);
 }
 
 void el_atom_pn(const char *atom, char *out, size_t outlen)

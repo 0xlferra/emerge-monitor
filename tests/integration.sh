@@ -22,7 +22,8 @@ done
 fail() { echo "integration: FAIL: $*" >&2; cat "$tmp/server.log" >&2; exit 1; }
 agent() {
 	./emon-agent -s "$url" -n testbox -t "$tmp/token" \
-		-l "$tmp/emerge.log" -S "$tmp/state" -T "$tmp" "$@" --once
+		-l "$tmp/emerge.log" -S "$tmp/state" -T "$tmp" -L "" "$@" --once \
+		2>>"$tmp/agent-once.log"
 }
 # wait_for CMD...: retry for up to 10 seconds
 wait_for() {
@@ -78,7 +79,7 @@ cat >> "$tmp/emerge.log" <<EOL
 1700030001:  >>> emerge (1 of 1) $atom to /
 EOL
 ./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
-	-S "$tmp/state" -T "$tmp" -i 1 2>"$tmp/agent.log" &
+	-S "$tmp/state" -T "$tmp" -L "" -i 1 2>"$tmp/agent.log" &
 agent_pid=$!
 
 log_matches() {
@@ -115,6 +116,36 @@ size=$(wc -c < "$blog")
 hdr=$(curl -fs -D - -o /dev/null "$url/api/v1/buildlog?host=testbox&atom=$atom&offset=$size")
 echo "$hdr" | grep -qi "^X-Log-Start: $size" || fail "offset: $hdr"
 echo "$hdr" | grep -qi "^X-Log-End: $size" || fail "end: $hdr"
+
+# --- build logs from PORTAGE_LOGDIR ----------------------------------------
+# Portage keeps PORTAGE_TMPDIR/portage/<cat> at 0700, so with PORTAGE_LOGDIR
+# set the agent reads the logs from there instead. Two parallel builds: one
+# in the default layout, one with FEATURES=split-log.
+kill $agent_pid
+wait $agent_pid 2>/dev/null || true
+plog="$tmp/plog"
+mkdir -p "$plog/build/dev-libs"
+# 1700040001 = 2023-11-15 09:20:01 UTC
+echo "OLD failed attempt" > "$plog/dev-libs:foo-2.0:20231115-090000.log"
+printf 'foo: configuring\n' > "$plog/dev-libs:foo-2.0:20231115-092005.log"
+printf 'bar: compiling\n' > "$plog/build/dev-libs/bar-1.0:20231115-092003.log"
+cat >> "$tmp/emerge.log" <<EOL
+1700040000:  *** emerge --jobs=2 dev-libs/foo dev-libs/bar
+1700040001:  >>> emerge (1 of 2) dev-libs/foo-2.0 to /
+1700040001:  >>> emerge (2 of 2) dev-libs/bar-1.0 to /
+EOL
+./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	-S "$tmp/state" -T "$tmp" -L "$plog" -i 1 2>"$tmp/agent.log" &
+agent_pid=$!
+
+served() {
+	curl -fs "$url/api/v1/buildlog?host=testbox&atom=$1" 2>/dev/null
+}
+foo_ok() { [ "$(served dev-libs/foo-2.0)" = "foo: configuring" ]; }
+bar_ok() { [ "$(served dev-libs/bar-1.0)" = "bar: compiling" ]; }
+wait_for foo_ok || fail "PORTAGE_LOGDIR log: '$(served dev-libs/foo-2.0)' $(cat "$tmp/agent.log")"
+wait_for bar_ok || fail "split-log log: '$(served dev-libs/bar-1.0)' $(cat "$tmp/agent.log")"
+grep -q "reading build logs from $plog" "$tmp/agent.log" || fail "agent.log: $(cat "$tmp/agent.log")"
 
 # Atoms are used to build paths on the agent: reject anything odd.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' \

@@ -2,8 +2,9 @@
 EMON_SERVER="http://monitor.lan:8080"
 # File containing the shared token (owner root:emon, mode 0640)
 EMON_TOKEN_FILE="/etc/emerge-monitor/token"
-# Extra options, e.g. "--name myhost --from-end", "--no-build-logs",
-# or "--portage-tmpdir /mnt/tmpfs" if PORTAGE_TMPDIR is not /var/tmp
+# Extra options, e.g. "--name myhost --from-end" or "--no-build-logs".
+# Live build logs need PORTAGE_LOGDIR set in make.conf (see README); the
+# agent picks it up by itself, "--portage-logdir DIR" overrides it.
 EMON_AGENT_OPTS=""
 # Unprivileged user to run as; it must be in the portage group
 EMON_USER="emon"

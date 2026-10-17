@@ -29,6 +29,16 @@ typedef struct {
  * if the line is an event we care about, 0 otherwise. */
 int el_parse_line(const char *line, size_t len, el_event *ev);
 
+/*
+ * Match the name Portage gives a build log in PORTAGE_LOGDIR:
+ *   "<cat><sep><pf><sep>YYYYMMDD-HHMMSS.log"  default layout
+ *   "<pf><sep>YYYYMMDD-HHMMSS.log"             FEATURES=split-log, in build/<cat>/
+ * where sep is PORTAGE_LOG_FILE_SEP (":" unless changed). Pass cat = NULL for
+ * the split-log form. Returns the build start time encoded in the name (UTC),
+ * or -1 if the name does not match.
+ */
+long long el_logdir_match(const char *name, const char *cat, const char *pf);
+
 /* Strip version (and revision / ::repo) from cat/pkg-ver, giving cat/pkg. */
 void el_atom_pn(const char *atom, char *out, size_t outlen);
 

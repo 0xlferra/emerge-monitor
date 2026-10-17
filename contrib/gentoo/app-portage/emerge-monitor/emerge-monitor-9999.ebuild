@@ -71,4 +71,9 @@ pkg_postinst() {
 		elog "  chmod 0640 /etc/emerge-monitor/token"
 		elog "Both daemons run as the unprivileged user 'emon'."
 	fi
+	if use agent; then
+		elog "To see live build logs in the dashboard, set PORTAGE_LOGDIR"
+		elog "(e.g. /var/log/portage) in make.conf: Portage keeps its build"
+		elog "directories readable by user portage only."
+	fi
 }
