@@ -107,7 +107,20 @@ build, so you may want to clean old ones up, e.g. with `PORTAGE_LOGDIR_CLEAN`
 
 The agent finds the directory by itself (`$PORTAGE_LOGDIR`, else
 `portageq envvar PORTAGE_LOGDIR` at startup) and prints where it reads build
-logs from; restart it after changing `make.conf`. Without `PORTAGE_LOGDIR` it
+logs from; restart it after changing `make.conf`. It warns at startup if the
+directory is not readable, or if it lies inside `$PORTAGE_TMPDIR/portage`,
+which Portage resets to `0700` at every build and so can never work.
+
+To keep the logs in RAM, give them a tmpfs of their own (mount options set
+the permissions, because Portage only sets them on a directory it creates;
+`250` is usually the `portage` uid/gid, check with `id portage`):
+
+```
+tmpfs  /var/log/portage  tmpfs  size=1G,mode=2770,uid=250,gid=250,noatime  0 0
+```
+
+or mount one tmpfs a level higher and put both builds and logs on it, with
+`PORTAGE_TMPDIR="/var/tmp/emerge"` and `PORTAGE_LOGDIR="/var/tmp/emerge/logs"`. Without `PORTAGE_LOGDIR` it
 falls back to `$PORTAGE_TMPDIR/portage/<cat>/<pf>/temp/build.log`, which only
 works if the agent runs as `portage` or root. Running it as `portage` is
 possible but not recommended: that user owns the build directories whose

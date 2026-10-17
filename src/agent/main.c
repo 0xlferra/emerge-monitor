@@ -260,10 +260,18 @@ static void scan_logdir(const char *dir, const char *cat, const char *pf,
 			long long min_ts, long long *best, char *out,
 			size_t outlen)
 {
+	static int warned;
 	DIR *d = opendir(dir);
 	struct dirent *de;
-	if (!d)
+	if (!d) {
+		/* ENOENT is normal: no split-log dir for this category yet */
+		if (errno != ENOENT && !warned) {
+			fprintf(stderr, "emon-agent: %s: %s; build logs will not "
+					"be shown\n", dir, strerror(errno));
+			warned = 1;
+		}
 		return;
+	}
 	while ((de = readdir(d)) != NULL) {
 		long long ts = el_logdir_match(de->d_name, cat, pf);
 		if (ts >= min_ts && ts > *best) {
@@ -504,6 +512,53 @@ static int run(const config *cfg)
 	return 0;
 }
 
+/* Is `path` equal to or below `dir`? */
+static int path_within(const char *path, const char *dir)
+{
+	size_t n = strlen(dir);
+	while (n > 1 && dir[n - 1] == '/')
+		n--;
+	return !strncmp(path, dir, n) && (path[n] == '\0' || path[n] == '/');
+}
+
+/*
+ * Say at startup, not silently at every build, when the build logs will
+ * not be readable. Problems that appear later are reported by scan_logdir.
+ */
+static void check_logdir(const config *cfg)
+{
+	char tmp_portage[4096];
+	struct stat st;
+
+	snprintf(tmp_portage, sizeof(tmp_portage), "%s/portage",
+		 cfg->portage_tmpdir);
+	if (path_within(cfg->portage_logdir, tmp_portage)) {
+		fprintf(stderr, "emon-agent: warning: PORTAGE_LOGDIR %s is inside "
+				"%s, which Portage resets to mode 0700 at every build; "
+				"build logs will not be readable. Use a directory "
+				"outside it (see README).\n",
+			cfg->portage_logdir, tmp_portage);
+		return;
+	}
+	if (stat(cfg->portage_logdir, &st) < 0) {
+		if (errno == ENOENT)
+			fprintf(stderr, "emon-agent: %s does not exist yet; Portage "
+					"creates it at the next build\n",
+				cfg->portage_logdir);
+		else
+			fprintf(stderr, "emon-agent: warning: %s: %s\n",
+				cfg->portage_logdir, strerror(errno));
+		return;
+	}
+	if (!S_ISDIR(st.st_mode) || access(cfg->portage_logdir, R_OK | X_OK) < 0)
+		fprintf(stderr, "emon-agent: warning: cannot read %s: %s; make it "
+				"readable by group portage (e.g. mode 2770 "
+				"portage:portage) and check the agent user is in "
+				"that group\n",
+			cfg->portage_logdir,
+			S_ISDIR(st.st_mode) ? strerror(errno) : "not a directory");
+}
+
 /* PORTAGE_LOGDIR from the environment, else from Portage's configuration. */
 static const char *detect_logdir(char *buf, size_t len)
 {
@@ -607,6 +662,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "emon-agent: reading build logs from %s%s\n",
 			cfg.portage_logdir ? cfg.portage_logdir : cfg.portage_tmpdir,
 			cfg.portage_logdir ? "" : "/portage");
+		if (cfg.portage_logdir)
+			check_logdir(&cfg);
 	}
 
 	if (!cfg.host[0]) {

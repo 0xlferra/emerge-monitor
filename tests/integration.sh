@@ -147,6 +147,20 @@ wait_for foo_ok || fail "PORTAGE_LOGDIR log: '$(served dev-libs/foo-2.0)' $(cat 
 wait_for bar_ok || fail "split-log log: '$(served dev-libs/bar-1.0)' $(cat "$tmp/agent.log")"
 grep -q "reading build logs from $plog" "$tmp/agent.log" || fail "agent.log: $(cat "$tmp/agent.log")"
 
+# A PORTAGE_LOGDIR the agent cannot use is reported at startup.
+startup_msg() {
+	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+		-S "$tmp/state2" -T "$tmp" -L "$1" --once 2>&1 >/dev/null
+}
+startup_msg "$tmp/portage/logs" | grep -q "resets to mode 0700" ||
+	fail "no warning for PORTAGE_LOGDIR inside PORTAGE_TMPDIR/portage"
+startup_msg "$tmp/nonexistent" | grep -q "creates it at the next build" ||
+	fail "no notice for missing PORTAGE_LOGDIR"
+startup_msg "$tmp/token" | grep -q "not a directory" ||
+	fail "no warning for PORTAGE_LOGDIR that is a file"
+startup_msg "$plog" | grep -q "warning" &&
+	fail "spurious warning for a good PORTAGE_LOGDIR"
+
 # Atoms are used to build paths on the agent: reject anything odd.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' \
 	"$url/api/v1/buildlog?host=testbox&atom=../../etc/passwd")
