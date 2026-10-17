@@ -57,13 +57,20 @@ daemons as the unprivileged user `emon`:
 
 `contrib/gentoo` is a small overlay holding `app-portage/emerge-monitor` plus
 `acct-user/emon` and `acct-group/emon`, which create the user (with
-`portage` as a supplementary group). Add it as a local repository, e.g. in
+`portage` as a supplementary group). Clone it somewhere outside `/home`,
+e.g. `git clone https://github.com/0xlferra/emerge-monitor.git
+/var/db/repos/emerge-monitor-src`, and add it as a local repository in
 `/etc/portage/repos.conf/emerge-monitor.conf`:
 
 ```ini
 [emerge-monitor]
-location = /path/to/emerge-monitor/contrib/gentoo
+location = /var/db/repos/emerge-monitor-src/contrib/gentoo
 ```
+
+Keep every repository readable by the agent user: the agent runs
+`portageq`, which reads all of them, and the systemd unit hides `/home`
+(`ProtectHome=`). A repository under a home directory makes `portageq` fail;
+the agent then says so at startup and falls back to defaults.
 
 then `emerge app-portage/emerge-monitor` (USE `agent`, `server` or both;
 it is a live `9999` ebuild, so it needs `**` keywords). The ebuild creates

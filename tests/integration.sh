@@ -174,10 +174,48 @@ chmod +x "$tmp/bin/portageq"
 msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
 	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
 	-S "$tmp/state2" --once 2>&1 >/dev/null)
+echo "$msg" | grep -q "PORTAGE_TMPDIR=$tmp/emerge (portageq)" ||
+	fail "PORTAGE_TMPDIR source not reported: $msg"
 echo "$msg" | grep -q "reading build logs from $tmp/emerge/portage/logs" ||
 	fail "PORTAGE_LOGDIR not taken from portageq: $msg"
 echo "$msg" | grep -q "inside $tmp/emerge/portage, which Portage resets" ||
 	fail "PORTAGE_TMPDIR not taken from portageq: $msg"
+
+# portageq failing (here: a repository it cannot stat) is reported, once,
+# with its error message, and the agent falls back to the defaults.
+cat > "$tmp/bin/portageq" <<'EOL'
+#!/bin/sh
+echo "Permission denied: 'stat('/home/someone/overlay')'" >&2
+exit 13
+EOL
+msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
+	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	-S "$tmp/state2" --once 2>&1 >/dev/null)
+echo "$msg" | grep -q "portageq envvar PORTAGE_TMPDIR failed (exit 13)" ||
+	fail "portageq failure not reported: $msg"
+echo "$msg" | grep -q "Permission denied: 'stat('/home/someone/overlay')'" ||
+	fail "portageq error message not shown: $msg"
+[ "$(echo "$msg" | grep -c "failed (exit")" -eq 1 ] ||
+	fail "portageq failure reported more than once: $msg"
+echo "$msg" | grep -q "PORTAGE_TMPDIR=/var/tmp (portageq failed)" ||
+	fail "fallback not reported: $msg"
+echo "$msg" | grep -q "PORTAGE_LOGDIR not used (portageq failed)" ||
+	fail "PORTAGE_LOGDIR fallback not reported: $msg"
+
+# An unset PORTAGE_LOGDIR (empty line, exit 1) is not an error.
+cat > "$tmp/bin/portageq" <<EOL
+#!/bin/sh
+case "\$2" in
+PORTAGE_TMPDIR) echo "$tmp/emerge" ;;
+*) echo; exit 1 ;;
+esac
+EOL
+msg=$(env -u PORTAGE_TMPDIR -u PORTAGE_LOGDIR PATH="$tmp/bin:$PATH" \
+	./emon-agent -s "$url" -n testbox -t "$tmp/token" -l "$tmp/emerge.log" \
+	-S "$tmp/state2" --once 2>&1 >/dev/null)
+echo "$msg" | grep -q "PORTAGE_LOGDIR not used (not set in Portage's configuration)" ||
+	fail "unset PORTAGE_LOGDIR: $msg"
+echo "$msg" | grep -q "failed" && fail "unset PORTAGE_LOGDIR reported as failure: $msg"
 
 # Atoms are used to build paths on the agent: reject anything odd.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' \

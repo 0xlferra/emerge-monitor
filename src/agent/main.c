@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -559,26 +560,74 @@ static void check_logdir(const config *cfg)
 			S_ISDIR(st.st_mode) ? strerror(errno) : "not a directory");
 }
 
+/* Run portageq again, keeping only its error output, and show it. */
+static void report_portageq_failure(const char *name, int status)
+{
+	char cmd[128], line[512];
+	int shown = 0;
+
+	if (status == 127) {
+		fprintf(stderr, "emon-agent: portageq not found in PATH\n");
+		return;
+	}
+	fprintf(stderr, "emon-agent: portageq envvar %s failed (exit %d):\n",
+		name, status);
+	snprintf(cmd, sizeof(cmd), "portageq envvar %s 2>&1 >/dev/null", name);
+	FILE *p = popen(cmd, "r");
+	while (p && fgets(line, sizeof(line), p))
+		if (shown++ < 5)
+			fprintf(stderr, "emon-agent:   %s%s", line,
+				strchr(line, '\n') ? "" : "\n");
+	if (p)
+		pclose(p);
+	fprintf(stderr, "emon-agent: Portage's configuration (make.conf, "
+			"repos.conf and every repository) must be readable by "
+			"the agent user; the systemd unit's ProtectHome= also "
+			"hides repositories under /home. Or pass --portage-tmpdir "
+			"and --portage-logdir.\n");
+}
+
 /*
  * A Portage variable from the environment, else from Portage's own
  * configuration (make.conf and profiles) via portageq. `name` must be a
- * constant: it goes into a shell command line.
+ * constant: it goes into a shell command line. `*source` says where the
+ * value came from; NULL is returned if it is unset or portageq failed.
  */
-static const char *portage_var(const char *name, char *buf, size_t len)
+static const char *portage_var(const char *name, char *buf, size_t len,
+			       const char **source)
 {
+	static int portageq_broken;
 	char cmd[128];
 	const char *env = getenv(name);
-	if (env)
-		return env;
+
+	if (env) {
+		*source = "environment";
+		return *env ? env : NULL;
+	}
+	*source = "portageq failed";
+	if (portageq_broken)
+		return NULL; /* already reported, no point retrying */
 
 	snprintf(cmd, sizeof(cmd), "portageq envvar %s 2>/dev/null", name);
 	FILE *p = popen(cmd, "r");
-	if (!p)
+	if (!p) {
+		portageq_broken = 1;
 		return NULL;
+	}
 	if (!fgets(buf, (int)len, p))
 		buf[0] = '\0';
-	pclose(p);
+	while (fgetc(p) != EOF)
+		;
+	int status = pclose(p);
+	status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 	buf[strcspn(buf, "\n")] = '\0';
+	/* An unset variable prints an empty line and exits 1. */
+	if (status != 0 && !(status == 1 && !buf[0])) {
+		report_portageq_failure(name, status);
+		portageq_broken = 1;
+		return NULL;
+	}
+	*source = buf[0] ? "portageq" : "not set in Portage's configuration";
 	return buf[0] ? buf : NULL;
 }
 
@@ -657,21 +706,39 @@ int main(int argc, char **argv)
 		cfg.interval = 1;
 	if (cfg.build_logs) {
 		static char tmpdir[4096], logdir[4096];
+		const char *tsrc = "option", *lsrc = "option";
+
 		if (!cfg.portage_tmpdir)
 			cfg.portage_tmpdir = portage_var("PORTAGE_TMPDIR", tmpdir,
-							 sizeof(tmpdir));
-		if (!cfg.portage_tmpdir || !*cfg.portage_tmpdir)
+							 sizeof(tmpdir), &tsrc);
+		if (!cfg.portage_tmpdir || !*cfg.portage_tmpdir) {
 			cfg.portage_tmpdir = "/var/tmp";
+			tsrc = !strcmp(tsrc, "portageq failed") ? tsrc : "default";
+		}
 		if (!cfg.portage_logdir)
 			cfg.portage_logdir = portage_var("PORTAGE_LOGDIR", logdir,
-							 sizeof(logdir));
+							 sizeof(logdir), &lsrc);
 		if (cfg.portage_logdir && !*cfg.portage_logdir)
 			cfg.portage_logdir = NULL;
+
+		fprintf(stderr, "emon-agent: PORTAGE_TMPDIR=%s (%s)\n",
+			cfg.portage_tmpdir, tsrc);
+		if (cfg.portage_logdir)
+			fprintf(stderr, "emon-agent: PORTAGE_LOGDIR=%s (%s)\n",
+				cfg.portage_logdir, lsrc);
+		else
+			fprintf(stderr, "emon-agent: PORTAGE_LOGDIR not used (%s)\n",
+				lsrc);
 		fprintf(stderr, "emon-agent: reading build logs from %s%s\n",
 			cfg.portage_logdir ? cfg.portage_logdir : cfg.portage_tmpdir,
 			cfg.portage_logdir ? "" : "/portage");
 		if (cfg.portage_logdir)
 			check_logdir(&cfg);
+		else
+			fprintf(stderr, "emon-agent: note: Portage keeps that "
+					"directory readable by user portage only, so "
+					"build logs usually need PORTAGE_LOGDIR (see "
+					"README)\n");
 	}
 
 	if (!cfg.host[0]) {
