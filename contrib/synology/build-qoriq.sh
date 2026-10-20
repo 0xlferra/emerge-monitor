@@ -165,8 +165,12 @@ cp "$tree/emon-server" "$B/emon-server"
 
 # The e500v2 traps on classic FPU instructions: make sure there are none.
 log "checking for instructions the e500v2 lacks"
+# musl's _start embeds a data word (".long _DYNAMIC-.") right after a bl
+# that jumps over it; objdump decodes it as whatever it happens to look
+# like, so skip that hand-written function.
 bad=$("${CROSS}objdump" -d "$B/emon-server" |
-	awk -F'\t' 'NF >= 3 { split($3, a, " "); print a[1] }' | sort -u |
+	awk -F'\t' '/^[0-9a-f]+ <.*>:$/ { skip = ($0 ~ /<_start>:$/) }
+		!skip && NF >= 3 { split($3, a, " "); print a[1] }' | sort -u |
 	grep -E '^(f[a-z]+|lf[sd]u?x?|stf[sd]u?x?|stfiwx|mffs.?|mtfs.*|lwsync)$' || true)
 [ -z "$bad" ] || die "unsupported instructions in emon-server: $bad"
 
