@@ -74,11 +74,19 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const dur = (s) => {
   if (s == null || s < 0) return "–";
-  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
-  return h ? `${h}h ${m}m` : m ? `${m}m ${x}s` : `${x}s`;
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
+        m = Math.floor(s % 3600 / 60), x = s % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${x}s` : `${x}s`;
 };
 const when = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "–";
-const ago = (ts, now) => ts ? dur(now - ts) + " ago" : "never";
+// Some times come from the Gentoo machine's clock (emerge.log), `now` from
+// the server's: allow them to disagree a little.
+const ago = (ts, now) => {
+  if (!ts) return "never";
+  const s = now - ts;
+  if (s < -120) return `in the future (clocks out of sync?)`;
+  return s < 5 ? "just now" : dur(s) + " ago";
+};
 const badge = (st) => `<span class="badge ${esc(st)}">${esc(st)}</span>`;
 async function api(path) {
   const r = await fetch(path);

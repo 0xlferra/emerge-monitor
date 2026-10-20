@@ -79,8 +79,25 @@ fetch sqlite https://github.com/sqlite/sqlite.git "$SQLITE_TAG" "$SQLITE_COMMIT"
 sysroot=$B/sysroot
 
 # --- musl, soft-float ------------------------------------------------------
-if [ ! -f "$sysroot/lib/libc.a" ]; then
+# Synology's DSM 6 kernels are Linux 2.6.32 plus syscalls of their own,
+# numbered past the end of the upstream table. musl tries newer syscalls
+# first (clock_gettime64 for time(), statx for stat()) and falls back to the
+# old ones only on ENOSYS; on DSM those numbers can be Synology syscalls
+# that fail differently, and time() then returned garbage. Nothing from
+# statx (383) on exists in 2.6.32, so move those numbers out of range: the
+# kernel answers ENOSYS and musl goes straight to the old calls. The
+# network syscalls (326-344), which DSM's kernel does have, are kept.
+musl_stamp=$sysroot/.musl-syscalls-ge383-disabled
+if [ ! -f "$musl_stamp" ]; then
 	log "building musl"
+	table=$B/src/musl/arch/powerpc/bits/syscall.h.in
+	git -C "$B/src/musl" checkout -q -- arch/powerpc/bits/syscall.h.in
+	awk '$1 == "#define" && $3 + 0 >= 383 { $3 = $3 + 65536 } { print }' \
+		"$table" > "$table.new"
+	mv "$table.new" "$table"
+	grep -q '__NR_clock_gettime64 65939$' "$table" ||
+		die "could not renumber musl's syscall table"
+	rm -rf "$sysroot"
 	rm -rf "$B/musl-build"
 	mkdir -p "$B/musl-build"
 	cd "$B/musl-build"
@@ -91,6 +108,7 @@ if [ ! -f "$sysroot/lib/libc.a" ]; then
 	make -s -j"$jobs" AR="${CROSS}ar" RANLIB="${CROSS}ranlib" >../musl-build.log 2>&1 ||
 		die "musl build failed, see $B/musl-build.log"
 	make -s install AR="${CROSS}ar" RANLIB="${CROSS}ranlib" >/dev/null
+	touch "$musl_stamp"
 	cd "$top"
 fi
 

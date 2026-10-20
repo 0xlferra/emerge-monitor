@@ -106,6 +106,12 @@ shown again and the database, token and settings are kept.
   PowerPC binary dies with *Illegal instruction* on the first floating point
   operation, and Debian's PowerPC `libgcc` is hard-float. A static musl binary
   also runs on DSM 6's 2.6.32 kernel, which current glibc refuses.
+- musl with every syscall numbered 383 or above moved out of range. musl
+  tries newer syscalls first (`clock_gettime64` for `time()`, `statx` for
+  `stat()`) and falls back to the old ones on `ENOSYS`, but DSM's kernels
+  give some of those numbers to Synology's own syscalls, which fail
+  differently: `time()` then returned garbage. None of them exist in Linux
+  2.6.32 anyway. `tools/timecheck.c` shows what a NAS's kernel answers.
 - **SQLite** 3.46.1, built into the binary (`make SQLITE_SRC=...`).
 - `emon-server`, then checks that it contains no FPU instructions.
 

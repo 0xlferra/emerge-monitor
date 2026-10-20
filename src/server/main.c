@@ -432,6 +432,11 @@ int main(int argc, char **argv)
 
 	fprintf(stderr, "emon-server: listening on %s, db %s\n", listen_addr,
 		db_path);
+	/* Everything shown as "... ago" depends on it. */
+	if (time(NULL) < 1577836800 || time(NULL) > 4102444800LL)
+		fprintf(stderr, "emon-server: warning: the clock reads %lld, "
+				"which is not a plausible date\n",
+			(long long)time(NULL));
 
 	while (!stop) {
 		int fd = accept(lfd, NULL, NULL);
